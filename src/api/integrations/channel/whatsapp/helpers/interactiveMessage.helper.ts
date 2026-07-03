@@ -1,7 +1,7 @@
 import { Button, KeyType } from '@api/dto/sendMessage.dto';
 import { BinaryNode } from 'baileys';
 
-export function buildInteractiveBizNode(flowName = 'mixed'): BinaryNode {
+export function buildInteractiveBizNode(): BinaryNode {
   return {
     tag: 'biz',
     attrs: {},
@@ -9,28 +9,18 @@ export function buildInteractiveBizNode(flowName = 'mixed'): BinaryNode {
       {
         tag: 'interactive',
         attrs: { type: 'native_flow', v: '1' },
-        content: [{ tag: 'native_flow', attrs: { v: '9', name: flowName } }],
+        content: [{ tag: 'native_flow', attrs: { v: '9', name: 'mixed' } }],
       },
     ],
   };
 }
 
 /**
- * Nó `bot` que o WA Web >= 2.3000.1040549582 (jun/2026) passou a exigir para
- * renderizar interativas 1:1 segundo InfiniteAPI #494. ATENÇÃO: testado em
- * 2026-07-03 em conta comum (self-chat) — o servidor REJEITOU o envio com
- * ack error=451 (listMessage). Mantido exportado só para experimentos;
- * não usar em produção até isolar as condições exatas.
- */
-export function buildBotNode(): BinaryNode {
-  return { tag: 'bot', attrs: { biz_bot: '1' } };
-}
-
-/**
  * Nó `biz` FLAT para nativeFlow de pagamento — o formato que a W-API usa no wire
  * (`<biz native_flow_name='payment_info'/>`), capturado 2026-07-03. O formato
  * aninhado (`<biz><interactive><native_flow name='payment_info'/>`) dispara o gate
- * 473 do servidor; o flat passa como stanza `type='text'` e renderiza.
+ * 473 do servidor; o flat passa como stanza `type='text'` e renderiza no
+ * destinatário quando enviado de uma conta Business. Ver docs/brain/pix-discard.md.
  */
 export function buildPaymentBizNode(): BinaryNode {
   return { tag: 'biz', attrs: { native_flow_name: 'payment_info' } };

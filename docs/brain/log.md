@@ -12,4 +12,7 @@ type: Log
 2026-07-03 — pesquisa: 451="commerce features disabled"; ordem correta dos nós é biz→bot; self-chat enviesa testes
 2026-07-03 — ✅ LISTA RESOLVIDA: renderização confirmada em aparelho real (21987686705) com pin de versão
 2026-07-03 — pix: 473 também em número real e também com payload mínimo estilo W-API → gate é a anotação payment_info; testando mixed+mínimo
-2026-07-03 — ✅ PIX ENCERRADO: mixed+mínimo = ack limpo mas nunca entrega (controle entregou em 1s) — matriz completa falha; copy é definitivo; builder restaurado p/ fail-fast
+2026-07-03 — pix: mixed+mínimo = ack limpo mas nunca entrega; messageSecret destravou a ENTREGA (1º receipt do destinatário)
+2026-07-03 — capturada mensagem PIX real da W-API no wire: biz node FLAT + header + messageVersion=1 + templateId numérico
+2026-07-03 — ✅ PIX RESOLVIDO: réplica do formato W-API renderiza em aparelho real (conta Business); EVOLUTION_PIX_MODE=native viável
+2026-07-03 — instrumentação send-trace removida; ambos os casos (lista e pix) encerrados com render confirmado

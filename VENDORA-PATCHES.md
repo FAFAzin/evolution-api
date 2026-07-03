@@ -17,25 +17,17 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
 
 ## Patches de código aplicados
 
-- **biz `payment_info` no PIX** — `whatsapp.baileys.service.ts` +
-  `helpers/interactiveMessage.helper.ts`: anuncia `native_flow name="payment_info"`
-  no biz node do PIX (antes: `mixed`), formato conforme oxidezap/whatsapp-rust#628 e
-  InfiniteAPI. Efeito: conta sem WhatsApp Pay falha rápido e explícito (**ack error=473**
-  → `messages.update` ERROR) em vez de aceitar e sumir. Matriz completa de experimentos
-  (2026-07-03) provou que PIX nativo não renderiza em conta comum por NENHUMA combinação
-  de payload/anotação — solução definitiva é `EVOLUTION_PIX_MODE=copy` no vendora-bot.
-  Diagnóstico: `docs/brain/pix-discard.md`.
-- **bot node (`<bot biz_bot="1"/>`) — TESTADO E REVERTIDO (2026-07-03)**: injetado em
-  interativas 1:1 conforme InfiniteAPI#494, o servidor rejeitou o envio com ack
-  error=451 (listMessage, conta comum, self-chat). Helper `buildBotNode()` mantido
-  para experimentos. Diagnóstico: `docs/brain/sendlist-discard.md`.
-
-- **send-trace (debug, temporário)** — `whatsapp.baileys.service.ts`: logs `[send-trace]`
-  (nível DEBUG) correlacionando envio interactive/list (`relayMessage`) com ack do servidor
-  (`CB:ack,class:message`) e receipts de dispositivo (`CB:receipt`). Suporte à investigação
-  dos descartes de lista/PIX (`docs/brain/sendlist-discard.md`, `docs/brain/pix-discard.md`).
-  Sem issue upstream — patch de instrumentação do fork; remover quando a causa for isolada.
-  Ativação: `LOG_LEVEL` contendo `DEBUG` (stanza XML completa: `LOG_BAILEYS=trace`).
+- **PIX nativo no formato W-API (RESOLVIDO 2026-07-03)** —
+  `whatsapp.baileys.service.ts` (branch PIX de `buttonMessage`) +
+  `helpers/interactiveMessage.helper.ts` (`buildPaymentBizNode`). Réplica byte-a-byte
+  de uma mensagem PIX real da W-API capturada no wire pela instância staging. Quatro
+  ajustes vs. o builder original: (1) nó biz **FLAT** `<biz native_flow_name="payment_info"/>`
+  em vez do aninhado (o aninhado dispara o gate **473** do servidor); (2)
+  `interactiveMessage.header = { hasMediaAttachment: false }`; (3)
+  `nativeFlowMessage.messageVersion = 1`; (4) `templateId` numérico +
+  `messageContextInfo.messageSecret` (destrava a entrega). **Renderização confirmada em
+  aparelho real** enviando de conta Business (produção sempre usa Business). Diagnóstico
+  completo e histórico dos experimentos (bot node → 451; matriz mixed×payload): `docs/brain/pix-discard.md`.
 
 ## Config operacional (Railway staging, não é patch de código)
 
@@ -45,8 +37,9 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   (ack 451). Risco: versões velhas são recusadas no handshake com o tempo (405) — se a
   instância parar de conectar, reavaliar (alternativas mapeadas em
   `docs/brain/sendlist-discard.md`).
-- `LOG_LEVEL=ERROR,WARN,INFO,DEBUG` + `LOG_BAILEYS=trace` — instrumentação send-trace
-  (temporário, investigação).
+- **Instrumentação send-trace removida** (2026-07-03) — os logs `[send-trace]` e os
+  listeners `CB:ack,class:message`/`CB:receipt` cumpriram o papel de diagnóstico e foram
+  retirados; `LOG_BAILEYS` pode voltar a `error` e `LOG_LEVEL` ao padrão.
 
 ## Regras
 

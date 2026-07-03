@@ -818,17 +818,6 @@ export class BaileysStartupService extends ChannelStartupService {
       this.sendDataWebhook(Events.CALL, payload, true, ['websocket']);
     });
 
-    // send-trace (vendora): correlate outgoing sends with server acks and device
-    // receipts to locate where list/pix messages are discarded (docs/brain/send-pipeline.md).
-    // An ack with attrs.error means the server rejected the message; a receipt with
-    // type="retry" means the device could not decrypt it.
-    this.client.ws.on('CB:ack,class:message', (node: BinaryNode) => {
-      this.logger.debug(`[send-trace] ack ${JSON.stringify(node.attrs)}`);
-    });
-    this.client.ws.on('CB:receipt', (node: BinaryNode) => {
-      this.logger.debug(`[send-trace] receipt ${JSON.stringify(node.attrs)}`);
-    });
-
     this.phoneNumber = number;
 
     return this.client;
@@ -2440,18 +2429,10 @@ export class BaileysStartupService extends ChannelStartupService {
         messageId,
         quoted,
       });
-      // Tested 2026-07-03: adding <bot biz_bot="1"/> here makes the server REJECT
-      // the send (ack error=451 for listMessage) on a regular account instead of
-      // fixing rendering — do not inject it until the exact conditions are known.
-      const relayNodes = additionalNodes?.length ? additionalNodes : undefined;
       const id = await this.client.relayMessage(sender, message, {
         messageId,
-        ...(relayNodes ? { additionalNodes: relayNodes } : {}),
+        ...(additionalNodes?.length ? { additionalNodes } : {}),
       });
-      this.logger.debug(
-        `[send-trace] relay id=${id} to=${sender} kinds=${Object.keys(message).join(',')} ` +
-          `nodes=${JSON.stringify(relayNodes ?? [])} message=${JSON.stringify(message).slice(0, 2000)}`,
-      );
       m.key = { id: id, remoteJid: sender, participant: isPnUser(sender) ? sender : undefined, fromMe: true };
       for (const [key, value] of Object.entries(m)) {
         if (!value || (isArray(value) && value.length) === 0) {

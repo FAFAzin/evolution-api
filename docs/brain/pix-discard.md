@@ -1,10 +1,27 @@
 ---
 type: Investigation
-title: PIX nativo (payment_info) descartado 100%
-description: sendButtons type pix nunca renderiza — interactiveMessage sem body, flow de pagamento e ordem zerada são os suspeitos.
-tags: [pix, payment_info, nativeFlow, sendButtons, discard]
+title: PIX nativo (payment_info) — RESOLVIDO (formato W-API)
+description: "RESOLVIDO 2026-07-03: PIX nativo renderiza com biz node FLAT + header + messageVersion=1 + messageSecret, de conta Business. Réplica capturada da W-API no wire."
+tags: [pix, payment_info, nativeFlow, sendButtons, resolved]
 timestamp: 2026-07-03T00:00:00Z
 ---
+
+# ✅ RESOLVIDO (2026-07-03) — receita que renderiza
+
+Enviando de **conta Business**, PIX nativo renderiza no destinatário com este formato
+(réplica byte-a-byte de uma mensagem real da W-API capturada no wire da instância staging):
+
+1. Nó biz **FLAT** em claro: `<biz native_flow_name="payment_info"/>` (NÃO o aninhado —
+   o aninhado dispara ack 473 do servidor).
+2. `interactiveMessage.header = { hasMediaAttachment: false }`.
+3. `nativeFlowMessage.messageVersion = 1`.
+4. `templateId` numérico (Date.now()) + `messageContextInfo.messageSecret` (32 bytes).
+5. `buttonParamsJson` = payload completo (order + payment_settings + pix_static_code) —
+   idêntico ao que já tínhamos; nunca foi o problema.
+
+Confirmado em aparelho real (2 envios, ack limpo + delivery receipts). Código:
+`buildPaymentBizNode` + branch PIX de `buttonMessage`. **Requer remetente Business**
+(produção do vendora-bot sempre usa) → `EVOLUTION_PIX_MODE=native` viável.
 
 # PIX nativo — descarte 100%
 
@@ -51,19 +68,27 @@ stanza corretíssima em conta comum e foi descartado; watinkdev#241 recebeu erro
 | `payment_info` | mínimo estilo W-API (sem order/payment_settings) | **ack 473** |
 | `mixed` | mínimo estilo W-API | ack limpo, **mas nunca entrega** (controle de texto no mesmo segundo entregou; PIX sem receipt do destinatário) |
 
-## ✅ CASO ENCERRADO (2026-07-03)
+## 🔬 CAPTURA DA W-API NO WIRE (2026-07-03) — a virada
 
-**PIX nativo (`payment_info`) é impossível em conta sem WhatsApp Pay/Business — por
-qualquer combinação de payload/anotação.** Todas as células da matriz falham: anotação
-`payment_info` → 473 explícito; anotação `mixed` → aceite + drop silencioso pré-entrega
-(payload completo E mínimo). Não é bug de código; é gating de capability da conta.
+Recebemos um PIX real da W-API na instância staging (receptor Baileys, `LOG_BAILEYS=trace`)
+e comparamos stanza + proto decriptado com o nosso. **O payload de pagamento é IDÊNTICO**
+(o webhook da W-API era truncado; eles mandam `pix_static_code` completo). A diferença é a
+EMBALAGEM:
 
-**Decisão:** `EVOLUTION_PIX_MODE=copy` (cta_copy) é a solução definitiva no vendora-bot.
-O builder do fork mantém payload completo + biz `payment_info` — falha rápida e explícita
-(473 vira `messages.update` status ERROR) em conta comum, e é o formato correto caso a
-conta um dia tenha a capability. Reavaliar apenas se: conta Business com pagamentos
-habilitados, ou upstream/comunidade demonstrar render em conta comum.
+| Campo | W-API (renderiza) | Nosso antigo (não) |
+|---|---|---|
+| **Nó biz (wire)** | **FLAT** `<biz native_flow_name='payment_info'/>` | aninhado `<biz><interactive><native_flow name='payment_info'/>` → **473** |
+| **stanza type** | `text` (passa limpo) | `text` mas biz aninhado → gate |
+| `interactiveMessage.header` | `{ hasMediaAttachment: false }` | ausente |
+| `nativeFlowMessage.messageVersion` | `1` | ausente |
+| `templateId` | numérico (ms) | UUID string |
+| conta remetente | Business (`verified_name` na stanza) | — |
 
-Referência W-API: o webhook deles ecoa payload mínimo — replicamos exatamente e não
-entrega em conta comum; presumivelmente o produto deles roda em contas com capability.
+**Fix aplicado (commit 070d013c):** `buildPaymentBizNode()` (flat) + header + messageVersion=1
++ templateId numérico + messageSecret. Réplica byte-a-byte do que a W-API emite. Requer
+remetente Business (produção sempre usa). Resultado do teste: ver log.
+
+**Histórico (por que demorou):** matriz `mixed`×payload e `payment_info` aninhado foram todas
+testadas antes desta captura e falhavam (473 ou drop). O `messageSecret` destravou a ENTREGA;
+o nó biz FLAT destrava o GATE 473; header/messageVersion completam o formato que RENDERIZA.
 Detalhe do probe: chave PIX em formato inválido também causa descarte silencioso.

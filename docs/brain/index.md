@@ -17,7 +17,7 @@ Contexto geral do fork: ver `CLAUDE.md` e `VENDORA-PATCHES.md` na raiz.
 ## Investigações (ambas encerradas em 2026-07-03)
 
 - [sendlist-discard](sendlist-discard.md) — ✅ RESOLVIDO: pin `CONFIG_BAILEYS_VERSION=2.3000.1040300918`; render confirmado em aparelho real.
-- [pix-discard](pix-discard.md) — ✅ ENCERRADO: PIX nativo exige WhatsApp Pay (matriz completa testada); solução = `EVOLUTION_PIX_MODE=copy`.
+- [pix-discard](pix-discard.md) — ✅ RESOLVIDO: PIX nativo renderiza de conta Business com formato W-API (biz FLAT + header + messageVersion + messageSecret); render confirmado no aparelho.
 
 ## Operação
 
