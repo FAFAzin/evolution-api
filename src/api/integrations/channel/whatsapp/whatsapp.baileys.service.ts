@@ -158,7 +158,12 @@ import { PassThrough, Readable } from 'stream';
 import { v4 } from 'uuid';
 
 import { BaileysMessageProcessor } from './baileysMessage.processor';
-import { buildInteractiveBizNode, buildListBizNode, toNativeFlowButton } from './helpers/interactiveMessage.helper';
+import {
+  buildBotNode,
+  buildInteractiveBizNode,
+  buildListBizNode,
+  toNativeFlowButton,
+} from './helpers/interactiveMessage.helper';
 import { useVoiceCallsBaileys } from './voiceCalls/useVoiceCallsBaileys';
 
 export interface ExtendedIMessageKey extends proto.IMessageKey {
@@ -2435,13 +2440,20 @@ export class BaileysStartupService extends ChannelStartupService {
         messageId,
         quoted,
       });
+      // WA Web >= 2.3000.1040549582 discards 1:1 interactive/list messages whose
+      // stanza lacks a bot node (InfiniteAPI #494); groups must not carry it.
+      const relayNodes = additionalNodes?.length
+        ? isJidGroup(sender)
+          ? additionalNodes
+          : [buildBotNode(), ...additionalNodes]
+        : undefined;
       const id = await this.client.relayMessage(sender, message, {
         messageId,
-        ...(additionalNodes?.length ? { additionalNodes } : {}),
+        ...(relayNodes ? { additionalNodes: relayNodes } : {}),
       });
       this.logger.debug(
         `[send-trace] relay id=${id} to=${sender} kinds=${Object.keys(message).join(',')} ` +
-          `nodes=${JSON.stringify(additionalNodes ?? [])} message=${JSON.stringify(message).slice(0, 2000)}`,
+          `nodes=${JSON.stringify(relayNodes ?? [])} message=${JSON.stringify(message).slice(0, 2000)}`,
       );
       m.key = { id: id, remoteJid: sender, participant: isPnUser(sender) ? sender : undefined, fromMe: true };
       for (const [key, value] of Object.entries(m)) {
@@ -3739,7 +3751,7 @@ export class BaileysStartupService extends ChannelStartupService {
           mentioned: data?.mentioned,
         },
         false,
-        [buildInteractiveBizNode()],
+        [buildInteractiveBizNode('payment_info')],
       );
     }
 

@@ -1,7 +1,7 @@
 import { Button, KeyType } from '@api/dto/sendMessage.dto';
 import { BinaryNode } from 'baileys';
 
-export function buildInteractiveBizNode(): BinaryNode {
+export function buildInteractiveBizNode(flowName = 'mixed'): BinaryNode {
   return {
     tag: 'biz',
     attrs: {},
@@ -9,10 +9,19 @@ export function buildInteractiveBizNode(): BinaryNode {
       {
         tag: 'interactive',
         attrs: { type: 'native_flow', v: '1' },
-        content: [{ tag: 'native_flow', attrs: { v: '9', name: 'mixed' } }],
+        content: [{ tag: 'native_flow', attrs: { v: '9', name: flowName } }],
       },
     ],
   };
+}
+
+/**
+ * Nó `bot` exigido pelo WA Web >= 2.3000.1040549582 (jun/2026) para renderizar
+ * interativas em chats 1:1 — sem ele o app receptor descarta em silêncio
+ * (InfiniteAPI #494). Não deve ser enviado em grupos.
+ */
+export function buildBotNode(): BinaryNode {
+  return { tag: 'bot', attrs: { biz_bot: '1' } };
 }
 
 /**

@@ -33,7 +33,20 @@ Branch exclusivo em `buttonMessage()` (whatsapp.baileys.service.ts ~linha 3691):
 
 Descarte 100% (vs intermitente da lista) sugere validação determinística, não rollout.
 
-## Próximo passo
+## Diagnóstico (2026-07-03)
 
-Mesma instrumentação de [send-pipeline](send-pipeline.md); teste A/B: PIX com body preenchido
-e/ou total_amount > 0 vs atual, na instância `vendora_cmr40kiah0006hkdstmybpd68`.
+**Traces:** ack limpo + receipts sem retry → descarte no receptor (ou strip server-side da
+anotação), igual à lista. **Pesquisa upstream (confiança ALTA):** `payment_info` é **gated
+por conta com WhatsApp Pay/Business** — williamprado/whatsmeow#7 (30/06/2026) testou com
+stanza corretíssima em conta comum e foi descartado; watinkdev#241 recebeu erro 473
+"exige WhatsApp Pay". A comunidade inteira convergiu no workaround `cta_copy` (nosso
+`EVOLUTION_PIX_MODE=copy`).
+
+**Fix parcial aplicado no fork (2026-07-03):** biz node do PIX agora anuncia
+`native_flow name="payment_info"` (antes `mixed` — formato errado, cf. whatsapp-rust#628 e
+InfiniteAPI SPECIAL_FLOW_NAMES) + bot node 1:1. Necessário mas provavelmente NÃO suficiente
+em conta comum. Se não renderizar: manter copy como default; testes restantes mapeados —
+formato flat (`<biz actual_actors="2" host_storage="2" privacy_mode_ts="..."
+native_flow_name="payment_info"/>`, único com relato de render em 2026, baileyrs#7),
+variante `review_and_pay`, e teste com conta WhatsApp Business com pagamentos habilitados.
+Detalhe do probe: chave PIX em formato inválido também causa descarte silencioso.
