@@ -58,3 +58,35 @@ Stanza XML completa (enviada e recebida): `LOG_BAILEYS=trace` (o `sendNode` do B
 descarte no servidor pós-aceite; receipt delivered sem renderizar → validação do app receptor;
 receipt `retry` → problema de sessão/criptografia. Ver [sendlist-discard](sendlist-discard.md)
 e [pix-discard](pix-discard.md).
+
+## Códigos de erro de ack conhecidos (pesquisa 2026-07-03)
+
+- **451** — "commerce features disabled" (WAWebBackendErrors.js): conta sem recursos de
+  comércio/negócio; disparado ao anexar `<bot biz_bot="1"/>` em conta comum.
+- **463** — MessageAccountRestriction: conta restrita p/ iniciar novos chats (reach-out
+  time-lock, Baileys#2441). Self-chat BYPASSA esse gate.
+- **473** — gate de pagamento: exige WhatsApp Pay/Business (watinkdev#241 + teste nosso).
+- **475** — NewChatMessagesCapped; **479** — SmaxInvalid (sessão de device stale).
+
+## Regras de montagem da stanza (referência: InfiniteAPI + WA Web oficial)
+
+- **Ordem dos nós: `<biz>` PRIMEIRO, `<bot>` DEPOIS** (nosso teste de 03/07 usou bot→biz —
+  ordem errada, possível causa direta do 451).
+- Bot node: só em 1:1 privado (`isPnUser`/`isLidUser`), NUNCA em grupo/carousel/catálogo/bot.
+- O `<bot>` oficial do WA Web tem attrs `type`/`local_automated_type`/`client_thread_id` e só
+  é emitido por conta com bizBotType; o `biz_bot="1"` dos forks é forma simplificada que marca
+  a mensagem como "de bot/IA" (selo "IA ✦") e muda a classificação — pode disparar gating.
+
+## ⚠️ Limitação dos testes em self-chat
+
+Enviar para o próprio número: (1) TODO o fanout vai embrulhado em `deviceSentMessage`
+(caminho de renderização diferente, com bugs históricos); (2) self-chat bypassa gates de
+restrição (canSendMsgWhileTimelocked permite self). Ack/stanza valem; conclusões de
+RENDERIZAÇÃO e de GATING exigem reteste com segundo número real.
+
+## Versão anunciada do WA Web
+
+Pin via `CONFIG_BAILEYS_VERSION` é sonda de diagnóstico, NÃO solução durável: versões velhas
+passam a ser recusadas no handshake (405, Baileys#2376); o mitigador durável é
+`Platform.MACOS` (Baileys PR#2365). Em 03/07/2026 a corrente era ~2.3000.10426xxxxx;
+pré-bump da regra do bot node: 2.3000.1040300918 (InfiniteAPI#494).

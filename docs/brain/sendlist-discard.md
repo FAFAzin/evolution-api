@@ -39,17 +39,22 @@ descarta em silêncio. A Evolution busca a versão anunciada dinamicamente
 (`fetchLatestWaWebVersion`, linha ~697) → comportamento muda de um dia pro outro sem deploy
 = a intermitência observada (02/07 renderiza, 03/07 não).
 
-**Experimento bot node (2026-07-03) — FALHOU e foi revertido:** injetar `buildBotNode()`
-antes do biz node fez o servidor REJEITAR o envio com **ack error=451** (sem receipts),
-em conta comum enviando para o próprio número. Pior que o baseline (aceito + descarte
-intermitente). Hipóteses em investigação: (a) bot node exige conta/conteúdo específico
-(messageContextInfo?); (b) comportamento diferente em self-chat; (c) formato/posição
-diferentes na InfiniteAPI. Helper `buildBotNode()` mantido para novos experimentos.
+**Experimento bot node v1 (2026-07-03) — 451, revertido:** injetamos `<bot>` ANTES do
+`<biz>` e o servidor rejeitou com **ack error=451 = "commerce features disabled"** (conta
+comum, self-chat). DOIS suspeitos identificados pela pesquisa: (a) **ordem errada dos nós**
+— InfiniteAPI e WA Web oficial usam `<biz>` primeiro, `<bot>` depois; (b) bot node marca a
+mensagem como "de bot de negócio" e conta comum não tem a capability. Próximo teste: ordem
+correta biz→bot; se persistir 451, bot node é incompatível com conta comum.
 
-**Próximo experimento:** pin da versão anunciada pré-bump via `CONFIG_BAILEYS_VERSION=2.3000.1040300918`
-(suportado por `fetchLatestWaWebVersion` — manual version curto-circuita o fetch dinâmico).
-Reproduz deterministicamente o estado "dia bom" (02/07). Cache de versão: TTL 1h, chave
-`whatsapp_web_version` (explica parte da intermitência: versão cacheada vs recém-buscada).
+**Experimento pin de versão (2026-07-03):** `CONFIG_BAILEYS_VERSION=2.3000.1040300918`
+aplicado no staging; lista voltou a ack limpo + receipts (renderização pendente de
+confirmação no aparelho). ⚠️ Pin é sonda de diagnóstico, não solução: versões velhas são
+recusadas no handshake com o tempo (405); mitigador durável = `Platform.MACOS`
+(Baileys PR#2365). Cache de versão dinâmica: TTL 1h (explica intermitência intra-dia).
+
+**⚠️ Validade dos testes:** tudo até aqui foi self-chat — ver limitações em
+[send-pipeline](send-pipeline.md). Reteste com segundo número real é obrigatório antes de
+conclusões finais de renderização/gating.
 
 **Risco futuro:** o listMessage legado está sendo morto progressivamente (watinkdev#241
 reporta erro 405 do servidor em jun/2026; whatsmeow ❌). Plano B mapeado: nativeFlow

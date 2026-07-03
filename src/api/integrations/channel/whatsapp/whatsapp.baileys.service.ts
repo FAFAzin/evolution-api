@@ -3636,31 +3636,16 @@ export class BaileysStartupService extends ChannelStartupService {
       reply: () => toString({ display_text: button.displayText, id: button.id }),
       copy: () => toString({ display_text: button.displayText, copy_code: button.copyCode }),
       url: () => toString({ display_text: button.displayText, url: button.url, merchant_url: button.url }),
+      // W-API-shaped minimal params (their production PIX button webhook echoes
+      // exactly this JSON — no order/payment_settings). Experiment 2026-07-03 to
+      // isolate whether the 473 server gate triggers on the payment payload or
+      // on the payment_info flow itself.
       pix: () =>
         toString({
           currency: button.currency,
           total_amount: { value: 0, offset: 100 },
           reference_id: this.generateRandomId(),
           type: 'physical-goods',
-          order: {
-            status: 'pending',
-            subtotal: { value: 0, offset: 100 },
-            order_type: 'ORDER',
-            items: [
-              { name: '', amount: { value: 0, offset: 100 }, quantity: 0, sale_amount: { value: 0, offset: 100 } },
-            ],
-          },
-          payment_settings: [
-            {
-              type: 'pix_static_code',
-              pix_static_code: {
-                merchant_name: button.name,
-                key: button.key,
-                key_type: this.mapKeyType.get(button.keyType),
-              },
-            },
-          ],
-          share_payment_status: false,
         }),
     };
 
