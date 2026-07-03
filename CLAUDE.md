@@ -1,5 +1,32 @@
 # CLAUDE.md
 
+## ⚠️ FORK vendora.bot — leia primeiro
+
+Este é o fork do vendora.bot (`FAFAzin/evolution-api`), não o repo oficial. Repo
+irmão: `../vendora-bot` (knowledge base em `../vendora-bot/docs/brain/integrations/evolution.md`).
+
+**Regras do fork:**
+- Branch de trabalho: **`vendora-stable`** (base: tag upstream `2.4.0-rc2`). Patch set
+  MÍNIMO, todo patch documentado em `VENDORA-PATCHES.md` com issue/commit upstream.
+- Sync com o oficial: `git fetch upstream --tags && git merge <tag>` (NUNCA force-push).
+- **Push na `vendora-stable` dispara o build** (Actions → `ghcr.io/fafazin/evolution-api:vendora-2.4.0-rc2`
+  + tag `sha-<commit>`), consumido pelo Railway (staging vendora). Commit só de docs: `[skip ci]`.
+- Respostas em pt-BR; código/commits em inglês (Conventional Commits).
+
+**Missão atual (2026-07)** — diagnosticar por que o WhatsApp DESCARTA mensagens aceitas com 200:
+1. **Lista** (`sendList`): renderizou 2× em 02/07, depois 0/3 em 03/07 — mesmo código e sessão.
+   Caminho: `src/api/integrations/channel/whatsapp/whatsapp.baileys.service.ts` (listMessage /
+   helpers/interactiveMessage.helper.ts).
+2. **PIX nativo** (`sendButtons` type pix → nativeFlow `payment_info`): descartado em 100% dos
+   testes mesmo com `buildInteractiveBizNode()`. O vendora-bot contorna com cta_copy
+   (`EVOLUTION_PIX_MODE=copy`).
+
+Abordagem: instrumentar o envio (stanza + ack do servidor WA) e comparar com o que renderiza
+(botões reply/CTA e carrossel FUNCIONAM). Debug no Railway: `LOG_LEVEL` com DEBUG + `LOG_BAILEYS=true`.
+Instância de teste: `vendora_cmr40kiah0006hkdstmybpd68`; probe: `../vendora-bot/scripts/evolution-probe.ts`.
+
+---
+
 This file provides comprehensive guidance to Claude AI when working with the Evolution API codebase.
 
 ## Project Overview
