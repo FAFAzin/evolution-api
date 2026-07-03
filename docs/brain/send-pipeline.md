@@ -41,6 +41,20 @@ direto. Consequências:
 2. **Receipt do dispositivo** (delivered / 2 ticks) — o aparelho recebeu e decriptou.
 3. **Renderização** — validação interna do app receptor; descarte aqui é silencioso.
 
-A Evolution hoje só escuta `CB:call` (~linha 804) — ninguém observa os acks. Instrumentação
-deve capturar (1) e (2) para localizar onde list/pix morrem. Ver [sendlist-discard](sendlist-discard.md)
+## Instrumentação send-trace (patch do fork, 2026-07-03)
+
+Logs em nível DEBUG com marcador `[send-trace]` (greppável no Railway):
+
+- `[send-trace] relay id=... to=... kinds=... nodes=... message=...` — após cada
+  `relayMessage` de interactive/list (branch da linha ~2420).
+- `[send-trace] ack {...attrs}` — todo `CB:ack,class:message`; `attrs.error` = servidor rejeitou.
+- `[send-trace] receipt {...attrs}` — todo `CB:receipt`; `type:"retry"` = destinatário não
+  conseguiu decriptar; ausência de receipt = não entregue.
+
+Stanza XML completa (enviada e recebida): `LOG_BAILEYS=trace` (o `sendNode` do Baileys loga
+`xml send` / `recv xml` em nível trace).
+
+**Tabela de diagnóstico:** ack com `error` → política do servidor; ack limpo sem receipt →
+descarte no servidor pós-aceite; receipt delivered sem renderizar → validação do app receptor;
+receipt `retry` → problema de sessão/criptografia. Ver [sendlist-discard](sendlist-discard.md)
 e [pix-discard](pix-discard.md).

@@ -17,7 +17,12 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
 
 ## Patches de código aplicados
 
-- (nenhum até o momento)
+- **send-trace (debug, temporário)** — `whatsapp.baileys.service.ts`: logs `[send-trace]`
+  (nível DEBUG) correlacionando envio interactive/list (`relayMessage`) com ack do servidor
+  (`CB:ack,class:message`) e receipts de dispositivo (`CB:receipt`). Suporte à investigação
+  dos descartes de lista/PIX (`docs/brain/sendlist-discard.md`, `docs/brain/pix-discard.md`).
+  Sem issue upstream — patch de instrumentação do fork; remover quando a causa for isolada.
+  Ativação: `LOG_LEVEL` contendo `DEBUG` (stanza XML completa: `LOG_BAILEYS=trace`).
 
 ## Regras
 
