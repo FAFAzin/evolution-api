@@ -140,7 +140,7 @@ import { Label } from 'baileys/lib/Types/Label';
 import { LabelAssociation } from 'baileys/lib/Types/LabelAssociation';
 import { spawn } from 'child_process';
 import { isArray, isBase64, isURL } from 'class-validator';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import EventEmitter2 from 'eventemitter2';
 import ffmpeg from 'fluent-ffmpeg';
 import FormData from 'form-data';
@@ -3730,6 +3730,9 @@ export class BaileysStartupService extends ChannelStartupService {
             }),
           },
         },
+        // Payment flows require a message secret (same mechanism as polls);
+        // without it delivery is silently dropped (see docs/brain/pix-discard.md).
+        messageContextInfo: { messageSecret: randomBytes(32) },
       };
 
       return await this.sendMessageWithTyping(
