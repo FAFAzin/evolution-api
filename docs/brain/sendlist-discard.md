@@ -39,10 +39,17 @@ descarta em silêncio. A Evolution busca a versão anunciada dinamicamente
 (`fetchLatestWaWebVersion`, linha ~697) → comportamento muda de um dia pro outro sem deploy
 = a intermitência observada (02/07 renderiza, 03/07 não).
 
-**Fix aplicado no fork (2026-07-03):** injetar `buildBotNode()` antes do biz node em envios
-1:1 no branch de relay (nunca em grupos). Efeito colateral conhecido: selo "IA ✦" em alguns
-clientes. Confirmado por 3 implementações independentes (InfiniteAPI, baileys-interactive,
-williamprado/whatsmeow).
+**Experimento bot node (2026-07-03) — FALHOU e foi revertido:** injetar `buildBotNode()`
+antes do biz node fez o servidor REJEITAR o envio com **ack error=451** (sem receipts),
+em conta comum enviando para o próprio número. Pior que o baseline (aceito + descarte
+intermitente). Hipóteses em investigação: (a) bot node exige conta/conteúdo específico
+(messageContextInfo?); (b) comportamento diferente em self-chat; (c) formato/posição
+diferentes na InfiniteAPI. Helper `buildBotNode()` mantido para novos experimentos.
+
+**Próximo experimento:** pin da versão anunciada pré-bump via `CONFIG_BAILEYS_VERSION=2.3000.1040300918`
+(suportado por `fetchLatestWaWebVersion` — manual version curto-circuita o fetch dinâmico).
+Reproduz deterministicamente o estado "dia bom" (02/07). Cache de versão: TTL 1h, chave
+`whatsapp_web_version` (explica parte da intermitência: versão cacheada vs recém-buscada).
 
 **Risco futuro:** o listMessage legado está sendo morto progressivamente (watinkdev#241
 reporta erro 405 do servidor em jun/2026; whatsmeow ❌). Plano B mapeado: nativeFlow

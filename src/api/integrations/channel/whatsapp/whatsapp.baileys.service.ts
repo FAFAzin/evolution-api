@@ -158,12 +158,7 @@ import { PassThrough, Readable } from 'stream';
 import { v4 } from 'uuid';
 
 import { BaileysMessageProcessor } from './baileysMessage.processor';
-import {
-  buildBotNode,
-  buildInteractiveBizNode,
-  buildListBizNode,
-  toNativeFlowButton,
-} from './helpers/interactiveMessage.helper';
+import { buildInteractiveBizNode, buildListBizNode, toNativeFlowButton } from './helpers/interactiveMessage.helper';
 import { useVoiceCallsBaileys } from './voiceCalls/useVoiceCallsBaileys';
 
 export interface ExtendedIMessageKey extends proto.IMessageKey {
@@ -2440,13 +2435,10 @@ export class BaileysStartupService extends ChannelStartupService {
         messageId,
         quoted,
       });
-      // WA Web >= 2.3000.1040549582 discards 1:1 interactive/list messages whose
-      // stanza lacks a bot node (InfiniteAPI #494); groups must not carry it.
-      const relayNodes = additionalNodes?.length
-        ? isJidGroup(sender)
-          ? additionalNodes
-          : [buildBotNode(), ...additionalNodes]
-        : undefined;
+      // Tested 2026-07-03: adding <bot biz_bot="1"/> here makes the server REJECT
+      // the send (ack error=451 for listMessage) on a regular account instead of
+      // fixing rendering — do not inject it until the exact conditions are known.
+      const relayNodes = additionalNodes?.length ? additionalNodes : undefined;
       const id = await this.client.relayMessage(sender, message, {
         messageId,
         ...(relayNodes ? { additionalNodes: relayNodes } : {}),

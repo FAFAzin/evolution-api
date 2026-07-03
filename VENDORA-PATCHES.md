@@ -17,17 +17,17 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
 
 ## Patches de código aplicados
 
-- **bot node em interativas 1:1 + biz `payment_info` no PIX** —
-  `whatsapp.baileys.service.ts` + `helpers/interactiveMessage.helper.ts`: injeta
-  `<bot biz_bot="1"/>` antes do `<biz>` em envios interactive/list para chats 1:1
-  (nunca em grupos) e anuncia `native_flow name="payment_info"` no biz node do PIX
-  (antes: `mixed`). Motivo: WA Web >= 2.3000.1040549582 (jun/2026) descarta
-  interativas 1:1 sem o bot node — regressão documentada em
-  rsalcara/InfiniteAPI#494; formato do biz node de pagamento conforme
-  oxidezap/whatsapp-rust#628 e InfiniteAPI. Sem fix upstream até 2026-07-03
-  (evolution-foundation#2404/#2467 abertas). Efeito colateral conhecido: selo
-  "IA ✦" na mensagem em alguns clientes. Diagnóstico: `docs/brain/sendlist-discard.md`
-  e `docs/brain/pix-discard.md`.
+- **biz `payment_info` no PIX** — `whatsapp.baileys.service.ts` +
+  `helpers/interactiveMessage.helper.ts`: anuncia `native_flow name="payment_info"`
+  no biz node do PIX (antes: `mixed`), formato conforme oxidezap/whatsapp-rust#628 e
+  InfiniteAPI. Resultado: o servidor passou a responder **ack error=473** ("exige
+  WhatsApp Pay") em vez de aceitar e descartar — confirma que PIX nativo é gated por
+  conta Business com pagamentos; workaround permanece `EVOLUTION_PIX_MODE=copy` no
+  vendora-bot. Diagnóstico: `docs/brain/pix-discard.md`.
+- **bot node (`<bot biz_bot="1"/>`) — TESTADO E REVERTIDO (2026-07-03)**: injetado em
+  interativas 1:1 conforme InfiniteAPI#494, o servidor rejeitou o envio com ack
+  error=451 (listMessage, conta comum, self-chat). Helper `buildBotNode()` mantido
+  para experimentos. Diagnóstico: `docs/brain/sendlist-discard.md`.
 
 - **send-trace (debug, temporário)** — `whatsapp.baileys.service.ts`: logs `[send-trace]`
   (nível DEBUG) correlacionando envio interactive/list (`relayMessage`) com ack do servidor

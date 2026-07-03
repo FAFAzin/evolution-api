@@ -16,9 +16,11 @@ export function buildInteractiveBizNode(flowName = 'mixed'): BinaryNode {
 }
 
 /**
- * Nó `bot` exigido pelo WA Web >= 2.3000.1040549582 (jun/2026) para renderizar
- * interativas em chats 1:1 — sem ele o app receptor descarta em silêncio
- * (InfiniteAPI #494). Não deve ser enviado em grupos.
+ * Nó `bot` que o WA Web >= 2.3000.1040549582 (jun/2026) passou a exigir para
+ * renderizar interativas 1:1 segundo InfiniteAPI #494. ATENÇÃO: testado em
+ * 2026-07-03 em conta comum (self-chat) — o servidor REJEITOU o envio com
+ * ack error=451 (listMessage). Mantido exportado só para experimentos;
+ * não usar em produção até isolar as condições exatas.
  */
 export function buildBotNode(): BinaryNode {
   return { tag: 'bot', attrs: { biz_bot: '1' } };
