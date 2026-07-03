@@ -3636,16 +3636,31 @@ export class BaileysStartupService extends ChannelStartupService {
       reply: () => toString({ display_text: button.displayText, id: button.id }),
       copy: () => toString({ display_text: button.displayText, copy_code: button.copyCode }),
       url: () => toString({ display_text: button.displayText, url: button.url, merchant_url: button.url }),
-      // W-API-shaped minimal params (their production PIX button webhook echoes
-      // exactly this JSON — no order/payment_settings). Experiment 2026-07-03 to
-      // isolate whether the 473 server gate triggers on the payment payload or
-      // on the payment_info flow itself.
       pix: () =>
         toString({
           currency: button.currency,
           total_amount: { value: 0, offset: 100 },
           reference_id: this.generateRandomId(),
           type: 'physical-goods',
+          order: {
+            status: 'pending',
+            subtotal: { value: 0, offset: 100 },
+            order_type: 'ORDER',
+            items: [
+              { name: '', amount: { value: 0, offset: 100 }, quantity: 0, sale_amount: { value: 0, offset: 100 } },
+            ],
+          },
+          payment_settings: [
+            {
+              type: 'pix_static_code',
+              pix_static_code: {
+                merchant_name: button.name,
+                key: button.key,
+                key_type: this.mapKeyType.get(button.keyType),
+              },
+            },
+          ],
+          share_payment_status: false,
         }),
     };
 
@@ -3728,10 +3743,10 @@ export class BaileysStartupService extends ChannelStartupService {
           mentioned: data?.mentioned,
         },
         false,
-        // Experiment 2026-07-03: announcing payment_info in the plaintext biz node
-        // triggers the server 473 pay-gate on regular accounts; with 'mixed' the
-        // server accepts and the render decision moves to the receiving client.
-        [buildInteractiveBizNode()],
+        // payment_info here makes accounts without WhatsApp Pay fail fast with an
+        // explicit ack error=473 (surfaced as messages.update ERROR) instead of a
+        // silent post-accept drop — full experiment matrix in docs/brain/pix-discard.md.
+        [buildInteractiveBizNode('payment_info')],
       );
     }
 

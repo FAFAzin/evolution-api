@@ -9,3 +9,7 @@ type: Log
 2026-07-03 — pix: gated por WhatsApp Pay (alta confiança); biz node corrigido p/ payment_info; copy segue default
 2026-07-03 — reteste fix v1: bot node → servidor REJEITA (ack 451 lista); pix payment_info → ack 473 = confirmação do gating; bot node revertido
 2026-07-03 — pin CONFIG_BAILEYS_VERSION=2.3000.1040300918 no staging: lista volta a ack limpo + receipts; aguardando confirmação de renderização no aparelho
+2026-07-03 — pesquisa: 451="commerce features disabled"; ordem correta dos nós é biz→bot; self-chat enviesa testes
+2026-07-03 — ✅ LISTA RESOLVIDA: renderização confirmada em aparelho real (21987686705) com pin de versão
+2026-07-03 — pix: 473 também em número real e também com payload mínimo estilo W-API → gate é a anotação payment_info; testando mixed+mínimo
+2026-07-03 — ✅ PIX ENCERRADO: mixed+mínimo = ack limpo mas nunca entrega (controle entregou em 1s) — matriz completa falha; copy é definitivo; builder restaurado p/ fail-fast

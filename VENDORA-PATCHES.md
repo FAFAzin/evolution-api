@@ -20,10 +20,11 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
 - **biz `payment_info` no PIX** — `whatsapp.baileys.service.ts` +
   `helpers/interactiveMessage.helper.ts`: anuncia `native_flow name="payment_info"`
   no biz node do PIX (antes: `mixed`), formato conforme oxidezap/whatsapp-rust#628 e
-  InfiniteAPI. Resultado: o servidor passou a responder **ack error=473** ("exige
-  WhatsApp Pay") em vez de aceitar e descartar — confirma que PIX nativo é gated por
-  conta Business com pagamentos; workaround permanece `EVOLUTION_PIX_MODE=copy` no
-  vendora-bot. Diagnóstico: `docs/brain/pix-discard.md`.
+  InfiniteAPI. Efeito: conta sem WhatsApp Pay falha rápido e explícito (**ack error=473**
+  → `messages.update` ERROR) em vez de aceitar e sumir. Matriz completa de experimentos
+  (2026-07-03) provou que PIX nativo não renderiza em conta comum por NENHUMA combinação
+  de payload/anotação — solução definitiva é `EVOLUTION_PIX_MODE=copy` no vendora-bot.
+  Diagnóstico: `docs/brain/pix-discard.md`.
 - **bot node (`<bot biz_bot="1"/>`) — TESTADO E REVERTIDO (2026-07-03)**: injetado em
   interativas 1:1 conforme InfiniteAPI#494, o servidor rejeitou o envio com ack
   error=451 (listMessage, conta comum, self-chat). Helper `buildBotNode()` mantido
@@ -35,6 +36,17 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   dos descartes de lista/PIX (`docs/brain/sendlist-discard.md`, `docs/brain/pix-discard.md`).
   Sem issue upstream — patch de instrumentação do fork; remover quando a causa for isolada.
   Ativação: `LOG_LEVEL` contendo `DEBUG` (stanza XML completa: `LOG_BAILEYS=trace`).
+
+## Config operacional (Railway staging, não é patch de código)
+
+- **`CONFIG_BAILEYS_VERSION=2.3000.1040300918`** — pin da versão anunciada do WA Web.
+  **É o fix da lista** (renderização confirmada em aparelho real, 2026-07-03): o bump de
+  jun/2026 (>= 2.3000.1040549582) passou a exigir bot node que conta comum não pode usar
+  (ack 451). Risco: versões velhas são recusadas no handshake com o tempo (405) — se a
+  instância parar de conectar, reavaliar (alternativas mapeadas em
+  `docs/brain/sendlist-discard.md`).
+- `LOG_LEVEL=ERROR,WARN,INFO,DEBUG` + `LOG_BAILEYS=trace` — instrumentação send-trace
+  (temporário, investigação).
 
 ## Regras
 

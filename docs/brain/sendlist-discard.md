@@ -1,10 +1,22 @@
 ---
 type: Investigation
-title: sendList descartado (intermitente)
-description: Lista legada renderizou 2x em 02/07 e 0/3 em 03/07 com mesmo código/sessão — suspeita de política server-side.
-tags: [sendList, listMessage, discard, whatsapp]
+title: sendList descartado (RESOLVIDO — pin de versão)
+description: "RESOLVIDO 2026-07-03: WA Web pós-bump exigia bot node; fix = CONFIG_BAILEYS_VERSION=2.3000.1040300918 pinada. Renderização confirmada em aparelho real."
+tags: [sendList, listMessage, discard, whatsapp, resolved]
 timestamp: 2026-07-03T00:00:00Z
 ---
+
+# ✅ RESOLVIDO (2026-07-03)
+
+**Fix operacional:** `CONFIG_BAILEYS_VERSION=2.3000.1040300918` (env no Railway staging).
+Com a versão anunciada pinada na pré-bump, a lista legada + biz node voltou a: ack limpo →
+delivery receipts no destinatário real → **renderização confirmada no aparelho**
+(21987686705, botões funcionando). Sem mudança de código.
+
+**Manutenção do fix (importante):** versões velhas anunciadas passam a ser recusadas no
+handshake com o tempo (HTTP 405, Baileys#2376). Monitorar conexão; alternativa durável
+mapeada = plataforma macOS no handshake (Baileys PR#2365) ou bot node com ordem correta
+biz→bot quando a conta tiver capability (conta comum: 451 "commerce disabled").
 
 # sendList — descarte intermitente
 

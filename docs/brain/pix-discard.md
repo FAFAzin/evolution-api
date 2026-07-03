@@ -42,11 +42,28 @@ stanza corretíssima em conta comum e foi descartado; watinkdev#241 recebeu erro
 "exige WhatsApp Pay". A comunidade inteira convergiu no workaround `cta_copy` (nosso
 `EVOLUTION_PIX_MODE=copy`).
 
-**Fix parcial aplicado no fork (2026-07-03):** biz node do PIX agora anuncia
-`native_flow name="payment_info"` (antes `mixed` — formato errado, cf. whatsapp-rust#628 e
-InfiniteAPI SPECIAL_FLOW_NAMES) + bot node 1:1. Necessário mas provavelmente NÃO suficiente
-em conta comum. Se não renderizar: manter copy como default; testes restantes mapeados —
-formato flat (`<biz actual_actors="2" host_storage="2" privacy_mode_ts="..."
-native_flow_name="payment_info"/>`, único com relato de render em 2026, baileyrs#7),
-variante `review_and_pay`, e teste com conta WhatsApp Business com pagamentos habilitados.
+## Matriz de experimentos (2026-07-03, todos com send-trace)
+
+| Biz node | Payload | Resultado |
+|---|---|---|
+| `mixed` | completo (order + payment_settings) | servidor aceita, **cliente descarta** (baseline histórico) |
+| `payment_info` | completo | **ack 473** (self-chat E número real) |
+| `payment_info` | mínimo estilo W-API (sem order/payment_settings) | **ack 473** |
+| `mixed` | mínimo estilo W-API | ack limpo, **mas nunca entrega** (controle de texto no mesmo segundo entregou; PIX sem receipt do destinatário) |
+
+## ✅ CASO ENCERRADO (2026-07-03)
+
+**PIX nativo (`payment_info`) é impossível em conta sem WhatsApp Pay/Business — por
+qualquer combinação de payload/anotação.** Todas as células da matriz falham: anotação
+`payment_info` → 473 explícito; anotação `mixed` → aceite + drop silencioso pré-entrega
+(payload completo E mínimo). Não é bug de código; é gating de capability da conta.
+
+**Decisão:** `EVOLUTION_PIX_MODE=copy` (cta_copy) é a solução definitiva no vendora-bot.
+O builder do fork mantém payload completo + biz `payment_info` — falha rápida e explícita
+(473 vira `messages.update` status ERROR) em conta comum, e é o formato correto caso a
+conta um dia tenha a capability. Reavaliar apenas se: conta Business com pagamentos
+habilitados, ou upstream/comunidade demonstrar render em conta comum.
+
+Referência W-API: o webhook deles ecoa payload mínimo — replicamos exatamente e não
+entrega em conta comum; presumivelmente o produto deles roda em contas com capability.
 Detalhe do probe: chave PIX em formato inválido também causa descarte silencioso.
