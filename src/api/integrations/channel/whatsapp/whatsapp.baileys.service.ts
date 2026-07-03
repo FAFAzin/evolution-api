@@ -3728,7 +3728,10 @@ export class BaileysStartupService extends ChannelStartupService {
           mentioned: data?.mentioned,
         },
         false,
-        [buildInteractiveBizNode('payment_info')],
+        // Experiment 2026-07-03: announcing payment_info in the plaintext biz node
+        // triggers the server 473 pay-gate on regular accounts; with 'mixed' the
+        // server accepts and the render decision moves to the receiving client.
+        [buildInteractiveBizNode()],
       );
     }
 
