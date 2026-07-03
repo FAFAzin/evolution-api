@@ -158,7 +158,12 @@ import { PassThrough, Readable } from 'stream';
 import { v4 } from 'uuid';
 
 import { BaileysMessageProcessor } from './baileysMessage.processor';
-import { buildInteractiveBizNode, buildListBizNode, toNativeFlowButton } from './helpers/interactiveMessage.helper';
+import {
+  buildInteractiveBizNode,
+  buildListBizNode,
+  buildPaymentBizNode,
+  toNativeFlowButton,
+} from './helpers/interactiveMessage.helper';
 import { useVoiceCallsBaileys } from './voiceCalls/useVoiceCallsBaileys';
 
 export interface ExtendedIMessageKey extends proto.IMessageKey {
@@ -3715,8 +3720,14 @@ export class BaileysStartupService extends ChannelStartupService {
         throw new BadRequestException('PIX button cannot be mixed with other button types');
       }
 
+      // Byte-for-byte replica of the W-API native PIX message captured on the wire
+      // 2026-07-03 (docs/brain/pix-discard.md): empty header, messageVersion=1 and a
+      // numeric templateId in the nativeFlowMessage, paired with the FLAT payment
+      // biz node below. This is the only shape observed to render on a normal
+      // recipient from a Business sender.
       const message: proto.IMessage = {
         interactiveMessage: {
+          header: { hasMediaAttachment: false },
           nativeFlowMessage: {
             buttons: [
               {
@@ -3724,14 +3735,13 @@ export class BaileysStartupService extends ChannelStartupService {
                 buttonParamsJson: this.toJSONString(data.buttons[0]),
               },
             ],
+            messageVersion: 1,
             messageParamsJson: JSON.stringify({
               from: 'api',
-              templateId: v4(),
+              templateId: Date.now(),
             }),
           },
         },
-        // Payment flows require a message secret (same mechanism as polls);
-        // without it delivery is silently dropped (see docs/brain/pix-discard.md).
         messageContextInfo: { messageSecret: randomBytes(32) },
       };
 
@@ -3746,12 +3756,7 @@ export class BaileysStartupService extends ChannelStartupService {
           mentioned: data?.mentioned,
         },
         false,
-        // 'mixed' here: payment_info in the plaintext annotation trips the server
-        // 473 pay-gate on regular accounts; with 'mixed' + full pix_static_code
-        // params the message renders the native PIX bubble (matrix in
-        // docs/brain/pix-discard.md — historical client discards predated the
-        // CONFIG_BAILEYS_VERSION pin).
-        [buildInteractiveBizNode()],
+        [buildPaymentBizNode()],
       );
     }
 

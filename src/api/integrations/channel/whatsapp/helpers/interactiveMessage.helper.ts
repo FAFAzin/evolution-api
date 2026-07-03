@@ -27,6 +27,16 @@ export function buildBotNode(): BinaryNode {
 }
 
 /**
+ * Nó `biz` FLAT para nativeFlow de pagamento — o formato que a W-API usa no wire
+ * (`<biz native_flow_name='payment_info'/>`), capturado 2026-07-03. O formato
+ * aninhado (`<biz><interactive><native_flow name='payment_info'/>`) dispara o gate
+ * 473 do servidor; o flat passa como stanza `type='text'` e renderiza.
+ */
+export function buildPaymentBizNode(): BinaryNode {
+  return { tag: 'biz', attrs: { native_flow_name: 'payment_info' } };
+}
+
+/**
  * Biz node específico para `listMessage` legado.
  * Necessário para o WhatsApp Web/Desktop renderizar a lista — o moderno
  * (`interactiveMessage` + `single_select`) não é renderizado no Web.
