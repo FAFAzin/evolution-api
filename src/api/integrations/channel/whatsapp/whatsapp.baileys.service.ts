@@ -3743,10 +3743,12 @@ export class BaileysStartupService extends ChannelStartupService {
           mentioned: data?.mentioned,
         },
         false,
-        // payment_info here makes accounts without WhatsApp Pay fail fast with an
-        // explicit ack error=473 (surfaced as messages.update ERROR) instead of a
-        // silent post-accept drop — full experiment matrix in docs/brain/pix-discard.md.
-        [buildInteractiveBizNode('payment_info')],
+        // 'mixed' here: payment_info in the plaintext annotation trips the server
+        // 473 pay-gate on regular accounts; with 'mixed' + full pix_static_code
+        // params the message renders the native PIX bubble (matrix in
+        // docs/brain/pix-discard.md — historical client discards predated the
+        // CONFIG_BAILEYS_VERSION pin).
+        [buildInteractiveBizNode()],
       );
     }
 
