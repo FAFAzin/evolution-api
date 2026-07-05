@@ -29,6 +29,15 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   aparelho real** enviando de conta Business (produção sempre usa Business). Diagnóstico
   completo e histórico dos experimentos (bot node → 451; matriz mixed×payload): `docs/brain/pix-discard.md`.
 
+- **Teto de conexões do Prisma (2026-07-05)** — `repository.service.ts`
+  (`cappedDbUrl` no construtor do `PrismaRepository`). Impõe `connection_limit`
+  default (5, override `EVOLUTION_DB_CONNECTION_LIMIT`) na `DATABASE_CONNECTION_URI`
+  se ela não tiver um. Motivo: `max_connections` do Postgres é do servidor inteiro;
+  sem teto, o pool default da Evolution somou com web+worker do vendora no Postgres
+  compartilhado de staging e estourou ("too many clients"), derrubando páginas
+  (dashboard/ofertas) e login. Blinda a imagem mesmo se a env do Railway esquecer o
+  `?...&connection_limit=`. No-op se a URI já tem o param.
+
 ## Config operacional (Railway staging, não é patch de código)
 
 - **`CONFIG_BAILEYS_VERSION=2.3000.1040300918`** — pin da versão anunciada do WA Web.
