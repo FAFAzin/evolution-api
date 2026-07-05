@@ -282,6 +282,16 @@ export class BaileysStartupService extends ChannelStartupService {
 
   public stateConnection: wa.StateConnection = { state: 'close' };
 
+  // vendora patch: Meta's "Shortcake" passkey (WebAuthn) linking rollout
+  // (2026-06/07). After a successful QR/pairing-code companion registration the
+  // server pushes `passkey_prologue_request`; headless clients cannot complete
+  // the WebAuthn assertion, so pairing never finishes for flagged accounts.
+  // We DETECT and surface it (no ack/handshake attempt — protocol support is
+  // not merged upstream; see WhiskeySockets/Baileys#2689). Exposed through
+  // /instance/connectionState so dashboards can show precise guidance instead
+  // of an endless QR-refresh loop.
+  public passkeyRequired = false;
+
   public phoneNumber: string;
 
   public get connectionStatus() {
@@ -798,6 +808,10 @@ export class BaileysStartupService extends ChannelStartupService {
 
     this.endSession = false;
 
+    // vendora patch: fresh connection attempt — clear any passkey flag from a
+    // previous pairing try so the dashboard state reflects THIS attempt.
+    this.passkeyRequired = false;
+
     this.client = makeWASocket(socketConfig);
 
     if (this.localSettings.wavoipToken && this.localSettings.wavoipToken.length > 0) {
@@ -816,6 +830,22 @@ export class BaileysStartupService extends ChannelStartupService {
       console.log('CB:ack,class:call', packet);
       const payload = { event: 'CB:ack,class:call', packet: packet };
       this.sendDataWebhook(Events.CALL, payload, true, ['websocket']);
+    });
+
+    // vendora patch: detect Meta's passkey linking prologue ("Shortcake").
+    // The server pushes these AFTER companion registration succeeds; without a
+    // WebAuthn authenticator the handshake cannot be completed headless, so we
+    // only flag the account and let the dashboard explain — instead of the
+    // instance silently regenerating QR codes forever.
+    this.client.ws.on('CB:notification,type:passkey_prologue_request', () => {
+      this.passkeyRequired = true;
+      this.logger.warn(
+        `[passkey] account for instance "${this.instance.name}" is gated by WhatsApp's access-key (Shortcake) verification — headless pairing cannot complete`,
+      );
+    });
+
+    this.client.ws.on('CB:notification,type:crsc_continuation', () => {
+      this.passkeyRequired = true;
     });
 
     this.phoneNumber = number;

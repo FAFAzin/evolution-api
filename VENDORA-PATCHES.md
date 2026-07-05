@@ -38,6 +38,18 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   (dashboard/ofertas) e login. Blinda a imagem mesmo se a env do Railway esquecer o
   `?...&connection_limit=`. No-op se a URI já tem o param.
 
+- **Detecção do gate de passkey "Shortcake" (2026-07-05)** —
+  `whatsapp.baileys.service.ts` (campo `passkeyRequired` + listeners
+  `CB:notification,type:passkey_prologue_request` / `crsc_continuation`, reset a cada
+  tentativa de conexão) + `instance.controller.ts` (exposto em
+  `/instance/connectionState`). Contexto: rollout server-side da Meta (~29-30/06)
+  exige assertion WebAuthn (rpId whatsapp.com, userVerification required) DEPOIS do
+  registro de companion — cliente headless não consegue assinar, o pareamento nunca
+  conclui e a instância regenerava QR para sempre. O patch só DETECTA e sinaliza
+  (sem ack/handshake — suporte de protocolo não mergeado upstream;
+  acompanhar WhiskeySockets/Baileys#2689 e evolution-foundation/evolution-api#2618).
+  O dashboard do vendora usa a flag para parar o loop de QR e orientar o usuário.
+
 ## Config operacional (Railway staging, não é patch de código)
 
 - **`CONFIG_BAILEYS_VERSION=2.3000.1040300918`** — pin da versão anunciada do WA Web.

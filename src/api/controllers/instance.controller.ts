@@ -401,6 +401,10 @@ export class InstanceController {
       instance: {
         instanceName: instanceName,
         state: this.waMonitor.waInstances[instanceName]?.connectionStatus?.state,
+        // vendora patch: surfaced when the account is gated by WhatsApp's
+        // passkey ("Shortcake") linking verification — pairing cannot complete
+        // headless; dashboards should stop the QR loop and guide the user.
+        passkeyRequired: this.waMonitor.waInstances[instanceName]?.passkeyRequired ?? false,
       },
     };
   }
