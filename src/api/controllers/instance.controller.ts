@@ -1,3 +1,4 @@
+import { ImportSessionDto } from '@api/dto/import-session.dto';
 import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
 import { ChatwootService } from '@api/integrations/chatbot/chatwoot/services/chatwoot.service';
 import { ProviderFiles } from '@api/provider/sessions';
@@ -7,7 +8,7 @@ import { CacheService } from '@api/services/cache.service';
 import { WAMonitoringService } from '@api/services/monitor.service';
 import { SettingsService } from '@api/services/settings.service';
 import { Events, Integration, wa } from '@api/types/wa.types';
-import { Auth, Chatwoot, ConfigService, HttpServer, WaBusiness } from '@config/env.config';
+import { Auth, CacheConf, Chatwoot, ConfigService, HttpServer, ProviderSession, WaBusiness } from '@config/env.config';
 import { Logger } from '@config/logger.config';
 import { BadRequestException, InternalServerErrorException, UnauthorizedException } from '@exceptions';
 import { delay } from 'baileys';
@@ -347,6 +348,133 @@ export class InstanceController {
       this.logger.error(error);
       return { error: true, message: error.toString() };
     }
+  }
+
+  // ── vendora patch: browser-session bridge (Shortcake passkey workaround) ────
+  // For accounts flagged by Meta's passkey linking, headless pairing cannot
+  // complete. The escape hatch (mirrors Z-API's ConnectorZ) is to log the
+  // account into real web.whatsapp.com, extract the session, and inject it here.
+  // exportSession is the reference format + the round-trip test hook;
+  // importSession writes creds in the exact double-encoded shape the Prisma
+  // auth-state loader expects, then reloads the socket. Both require the GLOBAL
+  // API key — exfiltrating creds is a stronger capability than an instance
+  // token (a cloned session survives token rotation). Details: VENDORA-PATCHES.md
+  // and docs/brain/runbooks/whatsapp-passkey-pairing.md in the vendora repo.
+
+  private assertGlobalKey(key: string) {
+    const globalKey = this.configService.get<Auth>('AUTHENTICATION').API_KEY.KEY;
+    if (!key || key !== globalKey) {
+      throw new UnauthorizedException('Session bridge requires the global API key');
+    }
+  }
+
+  // The bridge reads/writes ONLY the Prisma Session table. defineAuthState()
+  // picks the store by config, so if creds actually live in Redis or an external
+  // provider the import would be a silent no-op. Fail loudly instead.
+  private assertPrismaAuthStore() {
+    const provider = this.configService.get<ProviderSession>('PROVIDER');
+    const cache = this.configService.get<CacheConf>('CACHE');
+    if (provider?.ENABLED || (cache?.REDIS?.ENABLED && cache?.REDIS?.SAVE_INSTANCES)) {
+      throw new BadRequestException(
+        'Session bridge requires the Prisma auth store: disable PROVIDER and CACHE_REDIS_SAVE_INSTANCES (keep DATABASE_SAVE_DATA_INSTANCE=true).',
+      );
+    }
+  }
+
+  private async resolveInstanceId(instanceName: string): Promise<string> {
+    const row = await this.prismaRepository.instance.findUnique({
+      where: { name: instanceName },
+      select: { id: true },
+    });
+    if (!row) {
+      throw new BadRequestException(`The "${instanceName}" instance does not exist`);
+    }
+    return row.id;
+  }
+
+  public async exportSession({ instanceName }: InstanceDto, key: string) {
+    this.assertGlobalKey(key);
+    this.assertPrismaAuthStore();
+    const instanceId = await this.resolveInstanceId(instanceName);
+    const session = await this.prismaRepository.session.findUnique({ where: { sessionId: instanceId } });
+    if (!session?.creds) {
+      throw new BadRequestException(`No stored session for "${instanceName}"`);
+    }
+    // Session.creds is double-encoded (JSON.stringify of the BufferJSON creds
+    // string). Undo the outer layer so the caller gets the canonical string.
+    return { instanceName, instanceId, creds: JSON.parse(session.creds) as string };
+  }
+
+  public async importSession({ instanceName }: InstanceDto, data: ImportSessionDto, key: string) {
+    this.assertGlobalKey(key);
+    this.assertPrismaAuthStore();
+
+    const credsString = data?.creds;
+    if (typeof credsString !== 'string' || credsString.length === 0) {
+      throw new BadRequestException('Missing "creds" (BufferJSON string) in body');
+    }
+    // Paired creds are a few KB; anything huge is a mistake or abuse.
+    if (credsString.length > 262_144) {
+      throw new BadRequestException('"creds" too large (> 256 KB) — not a Baileys session');
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(credsString);
+    } catch {
+      throw new BadRequestException('"creds" is not valid JSON');
+    }
+    if (!parsed?.noiseKey || !parsed?.me?.id) {
+      throw new BadRequestException('"creds" is not a paired Baileys session (missing noiseKey/me.id)');
+    }
+
+    const instanceId = await this.resolveInstanceId(instanceName);
+
+    // Write in the EXACT shape useMultiFileAuthStatePrisma.saveKey produces:
+    // Session.creds = JSON.stringify(<BufferJSON creds string>). The double
+    // encode is intentional — the loader does JSON.parse then BufferJSON.reviver.
+    await this.prismaRepository.session.upsert({
+      where: { sessionId: instanceId },
+      create: { sessionId: instanceId, creds: JSON.stringify(credsString) },
+      update: { creds: JSON.stringify(credsString) },
+    });
+
+    // Creds are now durably stored. The reload below is best-effort: on any
+    // failure we still report imported:true (the auto-reconnect / a manual
+    // /instance/connect will pick up the imported creds).
+    const instance = this.waMonitor.waInstances[instanceName];
+    if (!instance) {
+      return {
+        instance: { instanceName, instanceId, status: 'close' },
+        imported: true,
+        note: 'Session stored. Call GET /instance/connect/{instanceName} to establish the socket.',
+      };
+    }
+
+    let reloadError: string | undefined;
+    try {
+      const state = instance.connectionStatus?.state;
+      if (state === 'open' || state === 'connecting') {
+        // Tearing down a live socket triggers Baileys' own auto-reconnect,
+        // which re-reads the freshly imported creds. Don't ALSO connect here —
+        // that would race into a duplicate socket.
+        instance.client?.ws?.close();
+        instance.client?.end(new Error('import-session reload'));
+      } else {
+        // Not connected (the passkey case) — nothing auto-reconnects, so we
+        // establish the socket ourselves with the imported creds.
+        await instance.connectToWhatsapp();
+      }
+      await delay(2000);
+    } catch (error) {
+      reloadError = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`importSession: creds stored but reload failed (${reloadError})`);
+    }
+
+    return {
+      instance: { instanceName, instanceId, status: instance.connectionStatus?.state ?? 'connecting' },
+      imported: true,
+      ...(reloadError ? { reloadError } : {}),
+    };
   }
 
   public async restartInstance({ instanceName }: InstanceDto) {

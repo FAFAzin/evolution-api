@@ -50,6 +50,22 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   acompanhar WhiskeySockets/Baileys#2689 e evolution-foundation/evolution-api#2618).
   O dashboard do vendora usa a flag para parar o loop de QR e orientar o usuário.
 
+- **Bridge de sessão via browser (2026-07-05)** — `instance.controller.ts`
+  (`exportSession`/`importSession` + helpers `assertGlobalKey`/`resolveInstanceId`),
+  `instance.router.ts` (rotas `GET /instance/exportSession/{name}`,
+  `POST /instance/importSession/{name}`) e `dto/import-session.dto.ts`. Escape para
+  contas gated por passkey (nos moldes do ConnectorZ da Z-API): loga a conta no
+  web.whatsapp.com real, extrai a sessão e injeta aqui. `importSession` grava
+  `creds` (string BufferJSON) no formato EXATO do `saveKey` do
+  `use-multi-file-auth-state-prisma` (`Session.creds = JSON.stringify(<string
+  BufferJSON>)` — duplo-encode intencional; o loader faz `JSON.parse` +
+  `BufferJSON.reviver`), valida shape mínimo (`noiseKey` + `me.id`) e recarrega o
+  socket. `exportSession` é o formato de referência + hook do teste de round-trip
+  (`scripts/evolution-session-roundtrip.ts` no vendora). **Ambos exigem a GLOBAL
+  API key** — exfiltrar creds é escalonamento mais forte que o token da instância
+  (sessão clonada sobrevive à rotação de token). Server-side só (a extensão que
+  produz as creds do browser fica no vendora, ainda não implementada).
+
 ## Config operacional (Railway staging, não é patch de código)
 
 - **`CONFIG_BAILEYS_VERSION=2.3000.1040300918`** — pin da versão anunciada do WA Web.

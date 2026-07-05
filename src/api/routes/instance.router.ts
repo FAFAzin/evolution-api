@@ -1,4 +1,5 @@
 import { RouterBroker } from '@api/abstract/abstract.router';
+import { ImportSessionDto } from '@api/dto/import-session.dto';
 import { InstanceDto, SetPresenceDto } from '@api/dto/instance.dto';
 import { instanceController } from '@api/server.module';
 import { ConfigService } from '@config/env.config';
@@ -62,6 +63,32 @@ export class InstanceRouter extends RouterBroker {
           schema: null,
           ClassRef: InstanceDto,
           execute: (instance) => instanceController.fetchInstances(instance, key),
+        });
+
+        return res.status(HttpStatus.OK).json(response);
+      })
+      // vendora patch: browser-session bridge for passkey-gated accounts.
+      // Both require the global API key (checked in the controller).
+      .get(this.routerPath('exportSession'), ...guards, async (req, res) => {
+        const key = req.get('apikey');
+
+        const response = await this.dataValidate<InstanceDto>({
+          request: req,
+          schema: null,
+          ClassRef: InstanceDto,
+          execute: (instance) => instanceController.exportSession(instance, key),
+        });
+
+        return res.status(HttpStatus.OK).json(response);
+      })
+      .post(this.routerPath('importSession'), ...guards, async (req, res) => {
+        const key = req.get('apikey');
+
+        const response = await this.dataValidate<ImportSessionDto>({
+          request: req,
+          schema: null,
+          ClassRef: ImportSessionDto,
+          execute: (instance, data) => instanceController.importSession(instance, data, key),
         });
 
         return res.status(HttpStatus.OK).json(response);
