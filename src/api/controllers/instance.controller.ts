@@ -450,6 +450,17 @@ export class InstanceController {
       };
     }
 
+    // Inject the Signal key-store (one-time prekeys) BEFORE the reload, so the
+    // reconnect's fresh key cache reads them — required for inbound messages.
+    let keysWritten = 0;
+    if (data?.keys && typeof instance.importSignalKeys === 'function') {
+      try {
+        keysWritten = await instance.importSignalKeys(data.keys);
+      } catch (error) {
+        this.logger.warn(`importSession: key injection failed (${(error as Error)?.message})`);
+      }
+    }
+
     let reloadError: string | undefined;
     try {
       const state = instance.connectionStatus?.state;
@@ -473,6 +484,7 @@ export class InstanceController {
     return {
       instance: { instanceName, instanceId, status: instance.connectionStatus?.state ?? 'connecting' },
       imported: true,
+      keysWritten,
       ...(reloadError ? { reloadError } : {}),
     };
   }

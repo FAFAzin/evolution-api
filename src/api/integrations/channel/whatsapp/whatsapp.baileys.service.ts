@@ -298,6 +298,32 @@ export class BaileysStartupService extends ChannelStartupService {
     return this.stateConnection;
   }
 
+  // vendora patch: inject Signal keys (one-time prekeys) into this instance's
+  // auth key-store during the browser-session bridge. Without the prekeys,
+  // inbound senders can't establish a session with this device, so incoming
+  // messages never decrypt. Values arrive as base64 → converted to Buffer.
+  // Writing through authState.keys.set persists to the same backend the socket
+  // reads on the next (re)connect. Returns the number of keys written.
+  public async importSignalKeys(
+    keys: Record<string, Record<string, { private: string; public: string }>>,
+  ): Promise<number> {
+    const store = this.instance?.authState?.state?.keys;
+    if (!keys || !store) return 0;
+    const out: Record<string, Record<string, { private: Buffer; public: Buffer }>> = {};
+    let n = 0;
+    for (const category of Object.keys(keys)) {
+      out[category] = {};
+      for (const id of Object.keys(keys[category] || {})) {
+        const v = keys[category][id];
+        if (!v?.private || !v?.public) continue;
+        out[category][id] = { private: Buffer.from(v.private, 'base64'), public: Buffer.from(v.public, 'base64') };
+        n++;
+      }
+    }
+    if (n > 0) await store.set(out as any);
+    return n;
+  }
+
   public async logoutInstance() {
     // Mark instance as deleting to prevent reconnection attempts.
     this.isDeleting = true;
