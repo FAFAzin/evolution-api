@@ -17,6 +17,20 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
 
 ## Patches de código aplicados
 
+- **Bump Baileys `7.0.0-rc.9` → `7.0.0-rc13` (2026-07-08) — SEGURANÇA** — `package.json`.
+  Motivo primário: o rc.9 é vulnerável ao **CVE-2026-48063 / GHSA-qvv5-jq5g-4cgg
+  (CVSS 9.3, CRÍTICO)** — auth-bypass / spoofing de message-key + history-sync via
+  `placeholderResendMessage`; faixa afetada `>= rc.1, < rc12`, corrigido no rc12.
+  Bônus do rc10+: fixes de memory leak / deadlock de conexão / ack handling / LID e o
+  ciclo de vida completo de `tctoken` (colheita via history-sync + IQ, expiração,
+  re-emissão) + **recuperação ativa no ack 463** (`issuePrivacyTokens`, sem retry) —
+  reduz (não elimina) o 463 em contato frio de conta não-restrita. Compatibilidade
+  verificada: fork só usa barrel import + 2 deep imports (`lib/Types/Label`,
+  `LabelAssociation`) que seguem existindo no rc13; `shouldSyncHistoryMessage` já é
+  passado explícito (rc10 removeu o default); `npm run build` limpo. Patches de passkey/
+  prekey usam a interface pública do keystore, não afetados. `cstoken` (PR #2438) segue
+  não-mergeado em nenhuma versão — não entra. Diagnóstico: `docs/brain/463-outbound.md`.
+
 - **PIX nativo no formato W-API (RESOLVIDO 2026-07-03)** —
   `whatsapp.baileys.service.ts` (branch PIX de `buttonMessage`) +
   `helpers/interactiveMessage.helper.ts` (`buildPaymentBizNode`). Réplica byte-a-byte
