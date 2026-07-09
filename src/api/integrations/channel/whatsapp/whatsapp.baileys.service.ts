@@ -1875,6 +1875,17 @@ export class BaileysStartupService extends ChannelStartupService {
             message.message = update.message;
           }
 
+          // Surface server-side send failures (e.g. ack 463 reach-out time-lock):
+          // Baileys reports the error code in messageStubParameters when an ack has
+          // an error. Expose it so consumers know WHY an outbound message failed
+          // instead of only seeing a bare ERROR. See docs/brain/463-outbound.md.
+          if (update.messageStubParameters?.length) {
+            message.error = update.messageStubParameters[0];
+            if (update.messageStubParameters[1]) {
+              message.errorMessage = update.messageStubParameters[1];
+            }
+          }
+
           let findMessage: any;
           const configDatabaseData = this.configService.get<Database>('DATABASE').SAVE_DATA;
           if (configDatabaseData.HISTORIC || configDatabaseData.NEW_MESSAGE) {
@@ -1973,14 +1984,24 @@ export class BaileysStartupService extends ChannelStartupService {
                   `Update readed messages duplicated ignored in message.update [avoid deadlock]: ${messageKey}`,
                 );
               }
+            } else if (key.fromMe && status[update.status] === status[0]) {
+              // Outbound message rejected by the server (e.g. ack 463 reach-out
+              // time-lock): persist the ERROR terminal state so it stops showing
+              // as PENDING forever. See docs/brain/463-outbound.md.
+              await this.prismaRepository.message.update({
+                where: { id: findMessage.id },
+                data: { status: status[update.status] },
+              });
             }
           }
 
           this.sendDataWebhook(Events.MESSAGES_UPDATE, message);
 
           if (this.configService.get<Database>('DATABASE').SAVE_DATA.MESSAGE_UPDATE) {
+            // Strip fields not present in the MessageUpdate schema (message body and
+            // the webhook-only error fields) before persisting.
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { message: _msg, ...messageData } = message;
+            const { message: _msg, error: _err, errorMessage: _errMsg, ...messageData } = message;
             await this.prismaRepository.messageUpdate.create({ data: messageData });
           }
 

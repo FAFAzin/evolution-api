@@ -39,12 +39,10 @@ conversa prévia. Duas camadas: (1) número novo fazendo cold outreach; (2) Bail
 
 1. **Bump Baileys rc.9 → rc13** (2026-07-08) — primário pelo **CVE-2026-48063 (9.3)**; de
    bônus traz a recuperação de 463 do rc10+. Ver VENDORA-PATCHES.md.
-2. **Tier 1 — surface do 463 (a implementar):** o handler `messages.update`
-   (whatsapp.baileys.service.ts ~1798) hoje só grava status no DB `if (!key.fromMe)` → uma
-   msg NOSSA (fromMe) com 463 fica PENDING pra sempre, e o `messageStubParameters` (["463"])
-   é descartado. Fix: gravar status ERROR também p/ fromMe + expor o código 463 no webhook,
-   pra o vendora-bot reagir (pausar cold outreach, alertar). O 463 JÁ é emitido pelo rc.9
-   como `messages.update` {status: ERROR(0), messageStubParameters: ["463"]}.
+2. **Tier 1 — surface do 463 (IMPLEMENTADO 2026-07-08, commit no fork):** handler
+   `messages.update` — (a) expõe `error`/`errorMessage` (de `messageStubParameters`) no
+   webhook (limpos antes do create em messageUpdate); (b) grava status ERROR no banco também
+   p/ `fromMe` (antes só `!key.fromMe`), acabando com o PENDING eterno. Ver VENDORA-PATCHES.md.
 
 ## Mitigação operacional (o que a comunidade de fato usa)
 

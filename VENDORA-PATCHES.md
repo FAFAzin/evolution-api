@@ -31,6 +31,18 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   prekey usam a interface pública do keystore, não afetados. `cstoken` (PR #2438) segue
   não-mergeado em nenhuma versão — não entra. Diagnóstico: `docs/brain/463-outbound.md`.
 
+- **Surface do erro 463 em `messages.update` (2026-07-08)** —
+  `whatsapp.baileys.service.ts` (handler `messages.update`). Dois furos fechados:
+  (1) o código de erro do ack (`update.messageStubParameters`, ex.: `"463"` +
+  `"Your account has been restricted"` no rc13) era **descartado** — agora vai no
+  payload do webhook como `error`/`errorMessage` (removidos antes do `create` na
+  tabela `messageUpdate`, que tem schema fixo); (2) a atualização de status no banco
+  só rodava para mensagens **recebidas** (`!key.fromMe`) — uma mensagem NOSSA que o
+  servidor rejeita (463) ficava **PENDING para sempre**; agora, para `fromMe` com
+  status ERROR, grava ERROR no banco. Não conserta o 463 (é rate-limit server-side da
+  Meta), mas torna a API honesta sobre a falha para o consumidor reagir (pausar cold
+  outreach, alertar). Diagnóstico: `docs/brain/463-outbound.md`.
+
 - **PIX nativo no formato W-API (RESOLVIDO 2026-07-03)** —
   `whatsapp.baileys.service.ts` (branch PIX de `buttonMessage`) +
   `helpers/interactiveMessage.helper.ts` (`buildPaymentBizNode`). Réplica byte-a-byte
