@@ -1,22 +1,32 @@
 ---
 type: Investigation
-title: sendList descartado (RESOLVIDO — pin de versão)
-description: "RESOLVIDO 2026-07-03: WA Web pós-bump exigia bot node; fix = CONFIG_BAILEYS_VERSION=2.3000.1040300918 pinada. Renderização confirmada em aparelho real."
-tags: [sendList, listMessage, discard, whatsapp, resolved]
+title: sendList descartado (RESOLVIDO — bot node biz→bot em Business)
+description: "RESOLVIDO 2026-07-09: WA Web pós-bump exige <bot> após <biz> em interativas 1:1. Fix durável = injetar bot node (biz→bot) em conta Business — renderiza sem pin. Substitui o pin CONFIG_BAILEYS_VERSION."
+tags: [sendList, listMessage, discard, whatsapp, botnode, resolved]
 timestamp: 2026-07-03T00:00:00Z
 ---
 
-# ✅ RESOLVIDO (2026-07-03)
+# ✅ RESOLVIDO EM DEFINITIVO (2026-07-09) — bot node em Business
 
-**Fix operacional:** `CONFIG_BAILEYS_VERSION=2.3000.1040300918` (env no Railway staging).
-Com a versão anunciada pinada na pré-bump, a lista legada + biz node voltou a: ack limpo →
-delivery receipts no destinatário real → **renderização confirmada no aparelho**
-(21987686705, botões funcionando). Sem mudança de código.
+**Fix durável (código, commit a56de977):** injetar `<bot biz_bot="1"/>` DEPOIS do `<biz>`
+(ordem biz→bot, igual ao cliente WA Web oficial) em envios interactive/list 1:1, NUNCA em
+grupos. `buildBotNode()` no helper + relay em whatsapp.baileys.service.ts (~linha 2509).
 
-**Manutenção do fix (importante):** versões velhas anunciadas passam a ser recusadas no
-handshake com o tempo (HTTP 405, Baileys#2376). Monitorar conexão; alternativa durável
-mapeada = plataforma macOS no handshake (Baileys PR#2365) ou bot node com ordem correta
-biz→bot quando a conta tiver capability (conta comum: 451 "commerce disabled").
+**Por que agora funcionou** (o experimento de 03/07 falhou com 451): eram DUAS diferenças —
+(1) conta COMUM (o 451 é "commerce features disabled", que Business tem) e (2) ordem
+invertida (bot→biz). Em **conta Business + ordem biz→bot: servidor aceita (SERVER_ACK, sem
+451) e renderiza**. Validado em aparelho (staging, 2026-07-09): lista, botões reply, CTA,
+PIX nativo e carrossel — todos OK; PIX chega a DELIVERY_ACK. Produção é Business-only.
+
+**Substitui o pin** `CONFIG_BAILEYS_VERSION` — que funcionava mas envelhecia (versões velhas
+levam 405 no handshake, Baileys#2376). Com o bot node, prod roda a versão dinâmica atual e
+renderiza. Pin removido do staging; nunca aplicado em prod.
+
+## Histórico (fix operacional intermediário, 2026-07-03)
+
+Antes do bot node, o mitigador era `CONFIG_BAILEYS_VERSION=2.3000.1040300918` (env) —
+anunciava versão pré-bump, evitando a exigência do bot node. Funcionava mas com custo de
+envelhecimento. Superado pelo fix de código acima.
 
 # sendList — descarte intermitente
 

@@ -31,6 +31,19 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   prekey usam a interface pública do keystore, não afetados. `cstoken` (PR #2438) segue
   não-mergeado em nenhuma versão — não entra. Diagnóstico: `docs/brain/463-outbound.md`.
 
+- **Bot node em interativas/listas 1:1 (2026-07-09) — fix da renderização pós-bump** —
+  `whatsapp.baileys.service.ts` (relay) + `helpers/interactiveMessage.helper.ts`
+  (`buildBotNode`). Injeta `<bot biz_bot="1"/>` DEPOIS do `<biz>` (ordem biz→bot, igual
+  ao cliente WA Web oficial) em envios interactive/list 1:1 (NUNCA em grupos). Motivo:
+  WA Web >= 2.3000.1040549582 (jun/2026) descarta interativas/listas 1:1 sem esse nó
+  (InfiniteAPI#494) — confirmado em conta Business tb, não só comum. Um teste anterior
+  (2026-07-03) deu ack 451 "commerce features disabled", mas era conta COMUM e ordem
+  invertida (bot→biz); em **conta Business + ordem biz→bot o servidor aceita (SERVER_ACK,
+  sem 451) e renderiza**. Validado em aparelho no staging (2026-07-09): lista, botões
+  reply, CTA, PIX nativo e carrossel — todos renderizam; PIX chega a DELIVERY_ACK.
+  **Substitui a necessidade do pin `CONFIG_BAILEYS_VERSION`** (que envelhecia). Produção é
+  Business-only. Diagnóstico: `docs/brain/sendlist-discard.md`.
+
 - **Surface do erro 463 em `messages.update` (2026-07-08)** —
   `whatsapp.baileys.service.ts` (handler `messages.update`). Dois furos fechados:
   (1) o código de erro do ack (`update.messageStubParameters`, ex.: `"463"` +
