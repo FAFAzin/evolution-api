@@ -159,6 +159,7 @@ import { v4 } from 'uuid';
 
 import { BaileysMessageProcessor } from './baileysMessage.processor';
 import {
+  buildBotNode,
   buildInteractiveBizNode,
   buildListBizNode,
   buildPaymentBizNode,
@@ -2506,9 +2507,18 @@ export class BaileysStartupService extends ChannelStartupService {
         messageId,
         quoted,
       });
+      // WA Web >= 2.3000.1040549582 (jun/2026) discards 1:1 interactive/list unless
+      // the stanza carries a <bot> node AFTER the <biz> node (biz->bot order, like the
+      // official WA Web client). Groups must not carry it. Experiment on Business
+      // accounts (docs/brain/sendlist-discard.md).
+      const relayNodes = additionalNodes?.length
+        ? isJidGroup(sender)
+          ? additionalNodes
+          : [...additionalNodes, buildBotNode()]
+        : undefined;
       const id = await this.client.relayMessage(sender, message, {
         messageId,
-        ...(additionalNodes?.length ? { additionalNodes } : {}),
+        ...(relayNodes ? { additionalNodes: relayNodes } : {}),
       });
       m.key = { id: id, remoteJid: sender, participant: isPnUser(sender) ? sender : undefined, fromMe: true };
       for (const [key, value] of Object.entries(m)) {

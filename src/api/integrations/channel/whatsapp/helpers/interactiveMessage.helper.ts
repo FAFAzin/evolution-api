@@ -27,6 +27,18 @@ export function buildPaymentBizNode(): BinaryNode {
 }
 
 /**
+ * Nó `bot` que o WA Web >= 2.3000.1040549582 (jun/2026) passou a exigir para
+ * renderizar interativas/listas em chats 1:1 (InfiniteAPI#494). Deve vir DEPOIS
+ * do `<biz>` (ordem biz→bot, igual ao cliente WA Web oficial) e NUNCA em grupos.
+ * Um teste anterior (2026-07-03) deu ack 451 "commerce features disabled" — mas
+ * era conta COMUM e ordem invertida (bot→biz). Reintroduzido para validar em
+ * conta Business com a ordem correta. Ver docs/brain/sendlist-discard.md.
+ */
+export function buildBotNode(): BinaryNode {
+  return { tag: 'bot', attrs: { biz_bot: '1' } };
+}
+
+/**
  * Biz node específico para `listMessage` legado.
  * Necessário para o WhatsApp Web/Desktop renderizar a lista — o moderno
  * (`interactiveMessage` + `single_select`) não é renderizado no Web.
