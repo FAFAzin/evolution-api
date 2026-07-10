@@ -805,6 +805,10 @@ export class BaileysStartupService extends ChannelStartupService {
       fireInitQueries: true,
       connectTimeoutMs: 30_000,
       keepAliveIntervalMs: 30_000,
+      // vendora patch: cap Baileys IQ/USync query wait (default 60s). During a
+      // "cai e volta" reconnect the pre-send onWhatsApp query would otherwise
+      // hang up to 60s and freeze the caller. See docs/brain/reconnect-freeze.md.
+      defaultQueryTimeoutMs: 15_000,
       qrTimeout: 45_000,
       emitOwnEvents: false,
       shouldIgnoreJid: (jid) => {
@@ -2650,6 +2654,15 @@ export class BaileysStartupService extends ChannelStartupService {
     isIntegration = false,
     additionalNodes?: BinaryNode[],
   ) {
+    // vendora patch: fail fast when the socket isn't open. During a "cai e volta"
+    // reconnect the pre-send onWhatsApp query below would hang (up to
+    // defaultQueryTimeoutMs) and freeze the caller's flow. Throwing here returns an
+    // "instance not connected" body the consumer's transient-retry already handles,
+    // so the send retries when the socket is back. See docs/brain/reconnect-freeze.md.
+    if (this.stateConnection.state !== 'open' || !this.client?.ws?.isOpen) {
+      throw new BadRequestException('instance not connected');
+    }
+
     const isWA = (await this.whatsappNumber({ numbers: [number] }))?.shift();
 
     if (!isWA.exists && !isJidGroup(isWA.jid) && !isWA.jid.includes('@broadcast') && !isWA.jid.includes('@lid')) {

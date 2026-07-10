@@ -19,3 +19,4 @@ type: Log
 2026-07-08 — CVE-2026-48063 (9.3): bump baileys rc.9→rc13, validado no staging, promovido nos 4 shards de prod (por digest)
 2026-07-08 — Tier 1 (surface do 463): messages.update expõe error/errorMessage + grava ERROR p/ fromMe; promovido em prod
 2026-07-09 — lista descarta em Business tb (rc13 sem pin); bot node biz→bot em Business = fix durável (render confirmado); substitui o pin
+2026-07-09 — "cai e volta" congelava o flow: envio pendura na query pré-envio (onWhatsApp, 60s). Fix = guard fail-fast + defaultQueryTimeoutMs 15s (só no fork; vendora já retenta "instance not connected")

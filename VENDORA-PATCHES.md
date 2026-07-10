@@ -31,6 +31,16 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   prekey usam a interface pública do keystore, não afetados. `cstoken` (PR #2438) segue
   não-mergeado em nenhuma versão — não entra. Diagnóstico: `docs/brain/463-outbound.md`.
 
+- **Fail-fast no envio durante reconexão (2026-07-09)** — `whatsapp.baileys.service.ts`.
+  Dois patches contra o "cai e volta" que congelava o flow: (1) guard no início do
+  `sendMessageWithTyping` — se `stateConnection.state !== 'open'` ou `!client.ws.isOpen`,
+  lança `BadRequestException('instance not connected')` ANTES da query pré-envio
+  (`onWhatsApp`) que pendurava até 60s; (2) `defaultQueryTimeoutMs: 15_000` no socketConfig
+  (era 60s default), teto de qualquer query. A mensagem "instance not connected" no corpo
+  HTTP é reconhecida pelo `isTransientConnError` do vendora → o retry com backoff dele
+  dispara e a msg passa na reconexão, sem trava. Não requer mudança no vendora.
+  Diagnóstico: `docs/brain/reconnect-freeze.md`.
+
 - **Bot node em interativas/listas 1:1 (2026-07-09) — fix da renderização pós-bump** —
   `whatsapp.baileys.service.ts` (relay) + `helpers/interactiveMessage.helper.ts`
   (`buildBotNode`). Injeta `<bot biz_bot="1"/>` DEPOIS do `<biz>` (ordem biz→bot, igual
