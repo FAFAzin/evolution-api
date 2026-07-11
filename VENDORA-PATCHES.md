@@ -41,6 +41,13 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   dispara e a msg passa na reconexão, sem trava. Não requer mudança no vendora.
   Diagnóstico: `docs/brain/reconnect-freeze.md`.
 
+- **Bot node SÓ na lista (2026-07-10) — correção de regressão** — o bot node abaixo passou a
+  ser injetado **apenas em `listMessage`** (`wantsBotNode = !!message['listMessage'] && !isJidGroup`).
+  A versão de 2026-07-09 injetava em TODO interativo 1:1 e quebrou os **botões/CTA/carrossel/PIX**
+  pra muitos destinatários em produção: o `biz_bot=1` reclassifica a mensagem como bot de negócio/IA,
+  capacidade **gated no destinatário** (política de IA do WhatsApp 2026). Botões só precisam do
+  `<biz>`/native_flow, nunca do `<bot>`. Ver `docs/brain/sendlist-discard.md`.
+
 - **Bot node em interativas/listas 1:1 (2026-07-09) — fix da renderização pós-bump** —
   `whatsapp.baileys.service.ts` (relay) + `helpers/interactiveMessage.helper.ts`
   (`buildBotNode`). Injeta `<bot biz_bot="1"/>` DEPOIS do `<biz>` (ordem biz→bot, igual

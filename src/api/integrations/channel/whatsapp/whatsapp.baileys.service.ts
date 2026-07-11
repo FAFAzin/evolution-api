@@ -2511,14 +2511,17 @@ export class BaileysStartupService extends ChannelStartupService {
         messageId,
         quoted,
       });
-      // WA Web >= 2.3000.1040549582 (jun/2026) discards 1:1 interactive/list unless
-      // the stanza carries a <bot> node AFTER the <biz> node (biz->bot order, like the
-      // official WA Web client). Groups must not carry it. Experiment on Business
-      // accounts (docs/brain/sendlist-discard.md).
+      // Bot node ONLY for legacy listMessage in 1:1. Post-bump WA Web needs it for
+      // the legacy list to render; buttons/CTA/carousel/pix render with just the
+      // <biz>/native_flow node and must NOT carry <bot> — the biz_bot marker
+      // reclassifies them as an AI/business-bot message that WhatsApp gates on the
+      // recipient side, hiding them for many contacts. Groups never carry it.
+      // See docs/brain/sendlist-discard.md and reconnect-freeze.md history.
+      const wantsBotNode = !!message['listMessage'] && !isJidGroup(sender);
       const relayNodes = additionalNodes?.length
-        ? isJidGroup(sender)
-          ? additionalNodes
-          : [...additionalNodes, buildBotNode()]
+        ? wantsBotNode
+          ? [...additionalNodes, buildBotNode()]
+          : additionalNodes
         : undefined;
       const id = await this.client.relayMessage(sender, message, {
         messageId,

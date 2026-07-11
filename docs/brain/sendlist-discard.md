@@ -8,9 +8,19 @@ timestamp: 2026-07-03T00:00:00Z
 
 # ✅ RESOLVIDO EM DEFINITIVO (2026-07-09) — bot node em Business
 
-**Fix durável (código, commit a56de977):** injetar `<bot biz_bot="1"/>` DEPOIS do `<biz>`
-(ordem biz→bot, igual ao cliente WA Web oficial) em envios interactive/list 1:1, NUNCA em
-grupos. `buildBotNode()` no helper + relay em whatsapp.baileys.service.ts (~linha 2509).
+**Fix durável (código, commit a56de977, CORRIGIDO em 2026-07-10):** injetar `<bot biz_bot="1"/>`
+DEPOIS do `<biz>` (biz→bot) **APENAS em `listMessage` legado**, 1:1, NUNCA em grupos.
+`buildBotNode()` no helper + relay em whatsapp.baileys.service.ts (~linha 2518).
+
+⚠️ **REGRESSÃO E CORREÇÃO (2026-07-10):** a versão original de a56de977 injetava o bot node em
+TODO interativo 1:1 (botões/CTA/carrossel/PIX também). Em produção, "muitos contatos não viam
+os botões" — o `biz_bot=1` reclassifica a mensagem como bot de negócio/IA, capacidade **gated
+no destinatário** (política de IA do WhatsApp 2026), que renderiza pra uns e some pra outros.
+O nó que faz o interativo renderizar é o `<biz>`/native_flow, NÃO o `<bot>`. Botões/CTA/
+carrossel/PIX **nunca precisaram** do bot node (renderizavam só com `<biz>` antes). Fix:
+`wantsBotNode = !!message['listMessage'] && !isJidGroup(sender)` — bot node só na lista.
+Referências: nazedev/hitori (bot node é opt-in via flag `ai`); oxidezap/whatsapp-rust (usa
+ordem bot→biz — se a lista parar de renderizar, inverter a ordem).
 
 **Por que agora funcionou** (o experimento de 03/07 falhou com 451): eram DUAS diferenças —
 (1) conta COMUM (o 451 é "commerce features disabled", que Business tem) e (2) ordem
