@@ -35,6 +35,44 @@ O vendora aborta em 15s (timeout do `request()`), mas cai no `AbortError` que **
 que casa `"instance not connected"` → o retry com backoff 1s/3s/6s dispara sozinho → a
 mensagem passa quando o socket reconecta. Zero trava, lock liberado na hora, msg não se perde.
 
+## 🔴 A causa raiz de verdade (achada em 2026-07-14, pesquisa profunda)
+
+O fail-fast acima era **necessário mas insuficiente**. As causas reais:
+
+**1. A mina do 408 (a mais grave).** `DisconnectReason.connectionLost === timedOut === 408` no
+Baileys, e o **watchdog de keep-alive mata o socket com 408 a cada 35s sem tráfego de entrada**
+(blip de rede, stall de event loop). O upstream `72ca397c` (PR #2501, **só nas tags 2.4.0-rc1/rc2**
+— nenhuma 2.3.x tem) pôs 408 em `codesToNotReconnect` → caía no branch de logout →
+`cleaningUp()` → **`session.deleteMany()` = CREDENCIAIS APAGADAS** → cliente relê QR, instância
+não volta nem com redeploy. **Fix: 408 só é terminal se a sessão não estiver registrada.**
+
+**2. O hang de minutos é um MUTEX, não a rede.** `relayMessage` roda inteiro dentro de
+`authState.keys.transaction(work, meId)` — um `AsyncMutex` **sem timeout**, compartilhado com
+`resyncAppState`, `appPatch` (**markAsRead!**), `sendRetryRequest` e `uploadPreKeys`. Um
+"marcar como lida" trava TODOS os envios da instância. Dentro do lock ainda há queries de rede
+(eram 60s; nosso `defaultQueryTimeoutMs: 15s` cortou 4x). **Fix: `withSendTimeout` (60s).**
+⚠️ O guard `ws.isOpen` NÃO protege disso: o Baileys emite `connection: 'open'` **antes** do
+app-state sync/prekey upload terminarem — janela em que o guard passa e o mutex está preso.
+
+**3. Reconexão sem backoff** (3s fixo, sem cap) martelava o WA → **428** em cascata.
+**4. Dois sockets na mesma cred** (o antigo não era fechado) → `conflict` → **440** → ping-pong.
+
+**Fixes aplicados (2026-07-14):** ver VENDORA-PATCHES.md. Ordem de impacto: 408 > mutex-timeout
+> backoff > socket único.
+
+## Contexto de ecossistema (pesquisa)
+
+- **Nenhum gateway open-source tem outbox** (Baileys, whatsmeow, WAHA, wppconnect: todos falham
+  rápido). **Z-API e W-API são ASSÍNCRONAS com fila** — o OpenAPI da W-API literalmente responde
+  `200 "Mensagem enfileirada"` com um `insertedId` (ObjectId do Mongo). **É por isso que "as
+  outras APIs não tinham esse problema".** Nosso fail-fast é o padrão do ecossistema; falta a fila.
+- **Outbox (próximo passo):** deve viver no **consumidor** (vendora), não no fork — a Evolution
+  já aceita `messageId` customizado no body, então **idempotência sai de graça** (mesmo ID em todo
+  retry → WhatsApp deduplica). Formato obrigatório: `3EB0`+18 hex (`generateMessageIDV2`), não UUID.
+  ⚠️ TTL curto p/ interativas (uma pergunta de fluxo entregue 10 min depois é pior que nada).
+- **Railway proíbe Evolution API** explicitamente (staff: *"we do not allow userbots"*) — restarts
+  inexplicáveis podem ser enforcement.
+
 ## Observações / follow-ups
 
 - O fork NÃO reconecta em erro 408 (`timedOut`/`connectionLost`) — está em `codesToNotReconnect`

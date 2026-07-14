@@ -31,6 +31,30 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   prekey usam a interface pública do keystore, não afetados. `cstoken` (PR #2438) segue
   não-mergeado em nenhuma versão — não entra. Diagnóstico: `docs/brain/463-outbound.md`.
 
+- **Estabilidade de conexão: 408, backoff, socket único e timeout de envio (2026-07-14)** —
+  `whatsapp.baileys.service.ts`. Quatro correções, todas cirúrgicas:
+  1. **408 desambiguado (o mais grave).** O upstream `72ca397c` (PR #2501, só nas tags
+     `2.4.0-rc1/rc2` — nenhuma 2.3.x tem) pôs `408` em `codesToNotReconnect`. Mas no Baileys
+     `DisconnectReason.connectionLost === timedOut === 408`, e o watchdog de keep-alive emite
+     **connectionLost (408) a cada blip de rede** (35s sem tráfego de entrada). Resultado: um
+     hiccup de rede caía no branch de logout → `logout.instance` → `cleaningUp()` →
+     **`session.deleteMany()` = credenciais APAGADAS** → cliente tinha que reler o QR, e a
+     instância não voltava nem com redeploy. Fix: `408` sai da lista; só é terminal se a
+     sessão **não** estiver registrada (QR esgotado) — o que **preserva a intenção anti-loop
+     de QR do #2501**. Sessão pareada agora reconecta, como manda a doc do Baileys.
+  2. **Backoff exponencial com full jitter** (era delay fixo de 3s, sem cap): `random(0, min(60s,
+     2^n))`, reset no `connection: 'open'`, `515` (restartRequired) reconecta imediato. O delay
+     fixo martelava o WhatsApp e gerava os **428** "too many reconnect attempts".
+  3. **Um socket por credencial**: fecha o socket anterior (listeners primeiro) antes de
+     `makeWASocket`. Dois sockets na mesma cred = `<stream:error><conflict/>` → **440** → ping-pong.
+  4. **Teto de tempo no envio** (`withSendTimeout`, default 60s, `EVOLUTION_SEND_TIMEOUT_MS`).
+     `relayMessage`/`sendMessage` rodam dentro do mutex de chaves do Baileys — **sem timeout** e
+     compartilhado com `markAsRead`/resync/prekeys. Um detentor lento parava TODOS os envios da
+     instância sem limite (origem dos envios de 5+ min). O erro é redigido como
+     `"instance is not ready"` de propósito: casa com o retry transitório que o consumidor já
+     tem, então a mensagem é reenviada sozinha quando o socket libera.
+  Diagnóstico completo: `docs/brain/reconnect-freeze.md`.
+
 - **Fail-fast no envio durante reconexão (2026-07-09)** — `whatsapp.baileys.service.ts`.
   Dois patches contra o "cai e volta" que congelava o flow: (1) guard no início do
   `sendMessageWithTyping` — se `stateConnection.state !== 'open'` ou `!client.ws.isOpen`,

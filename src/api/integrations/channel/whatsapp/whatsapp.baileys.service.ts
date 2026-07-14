@@ -270,6 +270,9 @@ export class BaileysStartupService extends ChannelStartupService {
   private isDeleting = false; // Flag to prevent reconnection during deletion
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
   private eventProcessingQueue: Promise<void> = Promise.resolve();
+  // vendora patch: reconnect backoff state (reset on a successful 'open').
+  private reconnectAttempts = 0;
+  private reconnectTimer?: NodeJS.Timeout;
 
   // Cumulative history sync counters (reset on new sync or completion)
   private historySyncMessageCount = 0;
@@ -535,9 +538,9 @@ export class BaileysStartupService extends ChannelStartupService {
       }
 
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-      // 408 = request timeout — added per #2501 to avoid reconnect loops on
-      // transient network drops where the server returned a 408 in the close.
-      const codesToNotReconnect = [DisconnectReason.loggedOut, DisconnectReason.forbidden, 402, 406, 408];
+
+      // Terminal codes: the session is genuinely dead and the creds are useless.
+      const codesToNotReconnect = [DisconnectReason.loggedOut, DisconnectReason.forbidden, 402, 406];
 
       // FIX: Do not reconnect if it's the initial connection (waiting for QR code)
       // This prevents infinite loop that blocks QR code generation
@@ -548,21 +551,46 @@ export class BaileysStartupService extends ChannelStartupService {
         return;
       }
 
-      const shouldReconnect = !codesToNotReconnect.includes(statusCode);
+      // vendora patch: 408 is overloaded in Baileys — DisconnectReason.connectionLost
+      // AND DisconnectReason.timedOut share the same number. The keep-alive watchdog
+      // raises connectionLost (408) on any inbound-silence blip, so treating 408 as
+      // terminal (upstream #2501, only in the 2.4.0-rc line) killed the instance and
+      // wiped its credentials on an ordinary network hiccup. Disambiguate by
+      // registration: a paired session must reconnect; an unpaired one (QR refs
+      // exhausted) must not — which preserves #2501's anti-QR-loop intent.
+      const isRegistered = !!this.instance.wuid || !!this.instance.authState?.state?.creds?.registered;
+      const isQrExhausted = statusCode === DisconnectReason.timedOut && !isRegistered;
+
+      const shouldReconnect = !codesToNotReconnect.includes(statusCode) && !isQrExhausted;
 
       this.logger.info({
         message: 'Connection closed, evaluating reconnection',
         statusCode,
         shouldReconnect,
+        isRegistered,
         instanceName: this.instance.name,
       });
 
       if (shouldReconnect) {
-        // Add 3 second delay before reconnection to prevent rapid reconnection loops
-        this.logger.info('Reconnecting in 3 seconds...');
-        setTimeout(async () => {
-          await this.connectToWhatsapp(this.phoneNumber);
-        }, 3000);
+        // vendora patch: exponential backoff with full jitter (was a flat 3s, which
+        // hammered WhatsApp and produced 428 "too many reconnect attempts" storms).
+        // restartRequired (515) is the normal post-pairing restart — reconnect at once.
+        this.reconnectAttempts += 1;
+        const delayMs =
+          statusCode === DisconnectReason.restartRequired
+            ? 0
+            : Math.floor(Math.random() * Math.min(60_000, 1_000 * 2 ** (this.reconnectAttempts - 1)));
+
+        this.logger.info(`Reconnecting in ${delayMs}ms (attempt ${this.reconnectAttempts})`);
+
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = setTimeout(async () => {
+          try {
+            await this.connectToWhatsapp(this.phoneNumber);
+          } catch (error) {
+            this.logger.error(`Reconnect attempt failed: ${error}`);
+          }
+        }, delayMs);
       } else {
         this.logger.info(`Skipping reconnection for status code ${statusCode} (code is in codesToNotReconnect list)`);
         this.sendDataWebhook(Events.STATUS_INSTANCE, {
@@ -604,6 +632,8 @@ export class BaileysStartupService extends ChannelStartupService {
         this.logger.warn('connectionUpdate: connection open but client.user is undefined, skipping');
         return;
       }
+      // vendora patch: connection recovered — reset the reconnect backoff ladder.
+      this.reconnectAttempts = 0;
       this.instance.wuid = this.client.user.id.replace(/:\d+/, '');
       try {
         const profilePic = await this.profilePicture(this.instance.wuid);
@@ -842,6 +872,20 @@ export class BaileysStartupService extends ChannelStartupService {
     // vendora patch: fresh connection attempt — clear any passkey flag from a
     // previous pairing try so the dashboard state reflects THIS attempt.
     this.passkeyRequired = false;
+
+    // vendora patch: one socket per credential. WhatsApp kills the older session
+    // when two sockets share the same creds (<stream:error><conflict/> -> 440), so a
+    // lingering socket from a previous attempt would ping-pong with this one. Tear
+    // the old one down (listeners first) before opening the new one.
+    if (this.client) {
+      try {
+        this.client.ev.removeAllListeners('connection.update');
+        this.client.ws?.close();
+        this.client.end(undefined);
+      } catch (error) {
+        this.logger.warn(`Could not close previous socket cleanly: ${error}`);
+      }
+    }
 
     this.client = makeWASocket(socketConfig);
 
@@ -2475,6 +2519,36 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
+  /**
+   * vendora patch: hard ceiling on a Baileys send.
+   *
+   * relayMessage/sendMessage run inside Baileys' per-account key transaction, an
+   * AsyncMutex with NO timeout that is also taken by markAsRead, app-state resync and
+   * prekey upload. A single slow holder parks every send for that instance behind it
+   * with no bound — the source of the multi-minute sends. Racing a timeout turns an
+   * unbounded hang into a fast, retryable failure. Generous by default so a legitimate
+   * large-media upload isn't cut short; tune with EVOLUTION_SEND_TIMEOUT_MS.
+   */
+  private async withSendTimeout<T>(operation: Promise<T>): Promise<T> {
+    const timeoutMs = Number(process.env.EVOLUTION_SEND_TIMEOUT_MS) || 60_000;
+
+    let timer: NodeJS.Timeout;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        // Phrased so the consumer's transient-error retry (which already matches
+        // "instance is not ready") kicks in and resends once the socket frees up.
+        () => reject(new BadRequestException(`instance is not ready — send timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
+
+    try {
+      return await Promise.race([operation, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async sendMessage(
     sender: string,
     message: any,
@@ -2523,10 +2597,12 @@ export class BaileysStartupService extends ChannelStartupService {
           ? [...additionalNodes, buildBotNode()]
           : additionalNodes
         : undefined;
-      const id = await this.client.relayMessage(sender, message, {
-        messageId,
-        ...(relayNodes ? { additionalNodes: relayNodes } : {}),
-      });
+      const id = await this.withSendTimeout(
+        this.client.relayMessage(sender, message, {
+          messageId,
+          ...(relayNodes ? { additionalNodes: relayNodes } : {}),
+        }),
+      );
       m.key = { id: id, remoteJid: sender, participant: isPnUser(sender) ? sender : undefined, fromMe: true };
       for (const [key, value] of Object.entries(m)) {
         if (!value || (isArray(value) && value.length) === 0) {
@@ -2559,27 +2635,31 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     if (message['conversation']) {
-      return await this.client.sendMessage(
-        sender,
-        {
-          text: message['conversation'],
-          mentions,
-          linkPreview: linkPreview,
-          contextInfo: message['contextInfo'],
-        } as unknown as AnyMessageContent,
-        option as unknown as MiscMessageGenerationOptions,
+      return await this.withSendTimeout(
+        this.client.sendMessage(
+          sender,
+          {
+            text: message['conversation'],
+            mentions,
+            linkPreview: linkPreview,
+            contextInfo: message['contextInfo'],
+          } as unknown as AnyMessageContent,
+          option as unknown as MiscMessageGenerationOptions,
+        ),
       );
     }
 
     if (!message['audio'] && !message['poll'] && !message['sticker'] && sender != 'status@broadcast') {
-      return await this.client.sendMessage(
-        sender,
-        {
-          forward: { key: { remoteJid: this.instance.wuid, fromMe: true }, message },
-          mentions,
-          contextInfo: message['contextInfo'],
-        },
-        option as unknown as MiscMessageGenerationOptions,
+      return await this.withSendTimeout(
+        this.client.sendMessage(
+          sender,
+          {
+            forward: { key: { remoteJid: this.instance.wuid, fromMe: true }, message },
+            mentions,
+            contextInfo: message['contextInfo'],
+          },
+          option as unknown as MiscMessageGenerationOptions,
+        ),
       );
     }
 
@@ -2643,10 +2723,12 @@ export class BaileysStartupService extends ChannelStartupService {
       return firstMessage;
     }
 
-    return await this.client.sendMessage(
-      sender,
-      message as unknown as AnyMessageContent,
-      option as unknown as MiscMessageGenerationOptions,
+    return await this.withSendTimeout(
+      this.client.sendMessage(
+        sender,
+        message as unknown as AnyMessageContent,
+        option as unknown as MiscMessageGenerationOptions,
+      ),
     );
   }
 
