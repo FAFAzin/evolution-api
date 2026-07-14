@@ -3212,6 +3212,14 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   private async prepareMediaMessage(mediaMessage: MediaMessage) {
+    // vendora patch: media is uploaded here, BEFORE sendMessageWithTyping's connection
+    // guard runs — so on a disconnected instance this used to blow up with
+    // "TypeError: Cannot read properties of undefined (reading 'waUploadToServer')"
+    // and a 500. Fail fast with the same retryable message the text path returns.
+    if (!this.client?.waUploadToServer) {
+      throw new BadRequestException('instance not connected');
+    }
+
     try {
       const type = mediaMessage.mediatype === 'ptv' ? 'video' : mediaMessage.mediatype;
 
