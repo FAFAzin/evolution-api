@@ -5415,6 +5415,14 @@ export class BaileysStartupService extends ChannelStartupService {
     if (messageRaw.message.extendedTextMessage) {
       messageRaw.messageType = 'conversation';
       messageRaw.message.conversation = messageRaw.message.extendedTextMessage.text;
+      // The CTWA ad-click context (externalAdReply.ctwa_clid) rides on this wrapper's
+      // contextInfo; hoist it to the root before flattening or ad attribution is lost.
+      if (messageRaw.message.extendedTextMessage.contextInfo) {
+        messageRaw.contextInfo = {
+          ...messageRaw.contextInfo,
+          ...messageRaw.message.extendedTextMessage.contextInfo,
+        };
+      }
       delete messageRaw.message.extendedTextMessage;
     }
 
