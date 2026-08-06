@@ -85,7 +85,7 @@ import { createId as cuid } from '@paralleldrive/cuid2';
 import { Instance, Message } from '@prisma/client';
 import { createJid } from '@utils/createJid';
 import { fetchLatestWaWebVersion } from '@utils/fetchLatestWaWebVersion';
-import { makeProxyAgent, makeProxyAgentUndici } from '@utils/makeProxyAgent';
+import { makeProxyAgent } from '@utils/makeProxyAgent';
 import { getOnWhatsappCache, saveOnWhatsappCache } from '@utils/onWhatsappCache';
 import { status } from '@utils/renderStatus';
 import { sendTelemetry } from '@utils/sendTelemetry';
@@ -792,7 +792,7 @@ export class BaileysStartupService extends ChannelStartupService {
           const rand = Math.floor(Math.random() * Math.floor(proxyUrls.length));
           const proxyUrl = 'http://' + proxyUrls[rand];
           this.logger.info('Proxy url: ' + proxyUrl);
-          options = { agent: makeProxyAgent(proxyUrl), fetchAgent: makeProxyAgentUndici(proxyUrl) };
+          options = { agent: makeProxyAgent(proxyUrl), fetchAgent: makeProxyAgent(proxyUrl) };
         } catch (error) {
           this.logger.error(error);
         }
@@ -805,7 +805,10 @@ export class BaileysStartupService extends ChannelStartupService {
             username: this.localProxy.username,
             password: this.localProxy.password,
           }),
-          fetchAgent: makeProxyAgentUndici({
+          // fetchAgent must be a classic Agent (addRequest): Baileys uploads media on
+          // Node via https.request, which throws ERR_INVALID_ARG_TYPE on undici
+          // dispatchers — "Media upload failed on all hosts" for every proxied instance.
+          fetchAgent: makeProxyAgent({
             host: this.localProxy.host,
             port: this.localProxy.port,
             protocol: this.localProxy.protocol,

@@ -146,6 +146,21 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   (sessão clonada sobrevive à rotação de token). Server-side só (a extensão que
   produz as creds do browser fica no vendora, ainda não implementada).
 
+- **Upload de mídia quebrado em instância COM proxy (2026-08-05)** —
+  `whatsapp.baileys.service.ts`. O upstream `4a38e505` (merge da develop) trocou o
+  `fetchAgent` do socketConfig para `makeProxyAgentUndici` (undici `ProxyAgent`,
+  interface Dispatcher) achando que o `fetch()` nativo do Node exigia isso. Mas no
+  Baileys 7.0.0-rc13 o `fetchAgent` só é usado no upload de mídia
+  (`getWAUploadToServer` → `uploadWithNodeHttp`), que em runtime Node usa
+  `https.request({ agent })` — e o `http.ClientRequest` exige agente clássico com
+  `.addRequest()`; dispatcher undici lança `ERR_INVALID_ARG_TYPE` sincronamente para
+  **cada** host de upload → loop engole os erros → `"Media upload failed on all
+  hosts"` em **todo** envio de áudio/imagem/vídeo de instância com proxy (texto passa,
+  vai pelo WS). Detectado em prod no dia seguinte ao rollout do pool Decodo (05/08,
+  2 tenants, 10 falhas). Fix: voltar `fetchAgent` para `makeProxyAgent` (o
+  `HttpsProxyAgent` clássico, o mesmo que já funciona no `agent` do WS) — upload segue
+  saindo pelo IP do proxy (consistência anti-ban).
+
 ## Config operacional (Railway staging, não é patch de código)
 
 - **`CONFIG_BAILEYS_VERSION=2.3000.1040300918`** — pin da versão anunciada do WA Web.
