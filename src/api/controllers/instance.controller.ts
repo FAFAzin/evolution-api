@@ -327,6 +327,12 @@ export class InstanceController {
       }
 
       if (state == 'connecting') {
+        // vendora patch: a number on /instance/connect while the QR cycle is
+        // already running means "give me a pairing code" — generate it on the
+        // live socket instead of returning the memoized qrCode without one.
+        if (number && typeof instance.requestPairingCode === 'function') {
+          await instance.requestPairingCode(number);
+        }
         return instance.qrCode;
       }
 

@@ -161,6 +161,19 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   `HttpsProxyAgent` clássico, o mesmo que já funciona no `agent` do WS) — upload segue
   saindo pelo IP do proxy (consistência anti-ban).
 
+- **Pairing code em socket vivo + reset de `isDeleting` (2026-08-13)** —
+  `instance.controller.ts` + `whatsapp.baileys.service.ts`. Upstream só gera
+  `pairingCode` quando o socket **inicia** com o número (`connectToWhatsapp(number)`,
+  branch `state == 'close'`); com o ciclo de QR já rodando (`connecting` — o estado
+  normal assim que o dashboard abre o modal), `GET /instance/connect?number=` devolvia
+  o qrCode memoizado com `pairingCode: null`. Fix: método público
+  `requestPairingCode(number)` no service (Baileys aceita `requestPairingCode` a
+  qualquer momento pré-registro) + o branch `connecting` do controller chama ele quando
+  `number` vem na query. Aproveitando: `createClient` agora reseta `isDeleting = false`
+  — depois de um logout a flag ficava `true` para sempre e todo close subsequente
+  (inclusive o restart 515 obrigatório pós-pareamento) pulava a reconexão, quebrando
+  re-pareamento por QR/código na mesma entrada do waMonitor.
+
 ## Config operacional (Railway staging, não é patch de código)
 
 - **`CONFIG_BAILEYS_VERSION=2.3000.1040300918`** — pin da versão anunciada do WA Web.

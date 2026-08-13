@@ -871,6 +871,10 @@ export class BaileysStartupService extends ChannelStartupService {
     };
 
     this.endSession = false;
+    // vendora patch: an explicit new connect attempt is never a deletion — without
+    // this reset, a logout left isDeleting=true forever and every later close
+    // (including the mandatory 515 post-pairing restart) skipped reconnection.
+    this.isDeleting = false;
 
     // vendora patch: fresh connection attempt — clear any passkey flag from a
     // previous pairing try so the dashboard state reflects THIS attempt.
@@ -957,6 +961,21 @@ export class BaileysStartupService extends ChannelStartupService {
       this.logger.error(error);
       throw new InternalServerErrorException(error?.toString());
     }
+  }
+
+  // vendora patch: generate a pairing code on the LIVE socket. Upstream only
+  // produces one when the socket is (re)started with a number, so a request
+  // arriving while the QR cycle is already running returned pairingCode: null.
+  // Baileys allows requestPairingCode at any point before registration.
+  public async requestPairingCode(number: string): Promise<string | null> {
+    const registered = !!this.instance.wuid || !!this.instance.authState?.state?.creds?.registered;
+    if (!this.client || registered) {
+      throw new BadRequestException('Pairing code is only available while the instance is waiting to pair');
+    }
+    this.phoneNumber = number;
+    this.instance.qrcode = this.instance.qrcode || { count: 0 };
+    this.instance.qrcode.pairingCode = await this.client.requestPairingCode(number);
+    return this.instance.qrcode.pairingCode;
   }
 
   private readonly chatHandle = {
