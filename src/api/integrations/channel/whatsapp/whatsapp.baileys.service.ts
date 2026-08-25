@@ -129,6 +129,7 @@ import makeWASocket, {
   prepareWAMessageMedia,
   Product,
   proto,
+  S_WHATSAPP_NET,
   UserFacingSocketConfig,
   WAMediaUpload,
   WAMessage,
@@ -4221,6 +4222,45 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   // Chat Controller
+  /**
+   * vendora patch: liveness probe. `connectionState`/`fetchInstances` only report
+   * what THIS server believes; a socket can sit at "open" long after it stopped
+   * talking to WhatsApp (the zombie that only a restart cures). This sends the
+   * same iq ping Baileys uses for keep-alive and waits for the server's answer —
+   * it only succeeds if the connection is genuinely alive end to end.
+   *
+   * Deliberately not onWhatsApp: that path is cached (isOnWhatsapp table) and
+   * would answer "alive" from the database with a dead socket, and hitting USync
+   * on a schedule looks like scraping.
+   */
+  public async livenessCheck(timeoutMs = 8000): Promise<{
+    alive: boolean;
+    latencyMs: number;
+    state: string;
+    error?: string;
+  }> {
+    const started = Date.now();
+    const state = this.connectionStatus?.state ?? 'close';
+
+    if (!this.client || state !== 'open') {
+      return { alive: false, latencyMs: Date.now() - started, state, error: 'socket not open' };
+    }
+
+    try {
+      await Promise.race([
+        this.client.query({
+          tag: 'iq',
+          attrs: { to: S_WHATSAPP_NET, type: 'get', xmlns: 'w:p' },
+          content: [{ tag: 'ping', attrs: {} }],
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('liveness ping timed out')), timeoutMs)),
+      ]);
+      return { alive: true, latencyMs: Date.now() - started, state };
+    } catch (error) {
+      return { alive: false, latencyMs: Date.now() - started, state, error: error?.toString?.() ?? 'unknown' };
+    }
+  }
+
   public async whatsappNumber(data: WhatsAppNumberDto) {
     const jids: {
       groups: { number: string; jid: string }[];

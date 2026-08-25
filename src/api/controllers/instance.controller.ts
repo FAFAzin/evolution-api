@@ -555,6 +555,31 @@ export class InstanceController {
     };
   }
 
+  /**
+   * vendora patch: liveness of the socket, not of our bookkeeping. `connectionState`
+   * answers from what this server believes; this pings WhatsApp and waits for the
+   * reply, so a zombie socket ("open" but deaf) shows up as alive:false — the
+   * signal our watchdog uses to decide a restart is warranted.
+   */
+  public async livenessInstance({ instanceName }: InstanceDto) {
+    const instance = this.waMonitor.waInstances[instanceName];
+
+    if (!instance) {
+      return { instance: { instanceName, state: 'absent' }, alive: false, error: 'instance not in memory' };
+    }
+
+    if (typeof instance.livenessCheck !== 'function') {
+      return {
+        instance: { instanceName, state: instance.connectionStatus?.state ?? 'close' },
+        alive: false,
+        error: 'liveness not supported by this channel',
+      };
+    }
+
+    const result = await instance.livenessCheck();
+    return { instance: { instanceName, state: result.state }, ...result };
+  }
+
   public async fetchInstances({ instanceName, instanceId, number }: InstanceDto, key: string) {
     const env = this.configService.get<Auth>('AUTHENTICATION').API_KEY;
 
