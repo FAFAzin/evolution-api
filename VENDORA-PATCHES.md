@@ -174,6 +174,26 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   (inclusive o restart 515 obrigatório pós-pareamento) pulava a reconexão, quebrando
   re-pareamento por QR/código na mesma entrada do waMonitor.
 
+- **Watchdog de conexão + restart com socket único (2026-09-13)** —
+  `whatsapp.baileys.service.ts` (`armConnectWatchdog`/`clearConnectWatchdog`,
+  `teardownSocket`, `scheduleReconnect`, `restartSocket`) + `instance.controller.ts`
+  (`restartInstance` usa `restartSocket`). Problema medido em prod (13/09): 25 de 41
+  instâncias "open" no banco estavam com o socket em `connecting` **há dias**, todas
+  com proxy. Após um blip de rede (408/428 em massa nos 4 shards), a reconexão via
+  proxy fica presa no CONNECT: o `ws` recebe `handshakeTimeout` (30s), mas
+  `req.setTimeout` só arma quando o agent entrega um socket, e o `https-proxy-agent`
+  não tem timeout no CONNECT — nunca vem `open` nem `close`, e o `connectionUpdate`
+  (que é quem reconecta) não roda. Fix: no `connecting` de sessão **pareada**
+  (`wuid`/`creds.registered`; sessão em QR nunca é cronometrada e o `qr` limpa o
+  timer) arma um timer (`CONNECT_WATCHDOG_MS`, default 90s); se o socket não abriu
+  nem fechou, derruba-o em silêncio (remove o listener de `connection.update` antes
+  do `end()`, para o close dele não agendar uma segunda reconexão) e agenda a
+  reconexão pelo mesmo backoff com jitter. `restartSocket` faz o mesmo teardown +
+  um único `connectToWhatsapp` — o `restartInstance` anterior chamava `end()` (cujo
+  close agenda a reconexão automática) E `connectToWhatsapp()`, dois connects por
+  restart (o patch de socket único de 07/14 evitava o 440, mas custava um handshake
+  abandonado). Diagnóstico no vendora: `docs/brain/log.md` 2026-09-13.
+
 ## Config operacional (Railway staging, não é patch de código)
 
 - **`CONFIG_BAILEYS_VERSION=2.3000.1040300918`** — pin da versão anunciada do WA Web.

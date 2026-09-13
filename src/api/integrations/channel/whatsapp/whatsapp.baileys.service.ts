@@ -274,6 +274,12 @@ export class BaileysStartupService extends ChannelStartupService {
   // vendora patch: reconnect backoff state (reset on a successful 'open').
   private reconnectAttempts = 0;
   private reconnectTimer?: NodeJS.Timeout;
+  // vendora patch: connect watchdog. A reconnect through a proxy can sit in
+  // "connecting" forever — `ws` only arms handshakeTimeout once the agent hands
+  // it a socket, and https-proxy-agent has no timeout on its CONNECT — so nothing
+  // ever fires 'open' or 'close' and the reconnect ladder never runs.
+  private connectWatchdog?: NodeJS.Timeout;
+  private static readonly CONNECT_WATCHDOG_MS = Number(process.env.CONNECT_WATCHDOG_MS) || 90_000;
 
   // Cumulative history sync counters (reset on new sync or completion)
   private historySyncMessageCount = 0;
@@ -333,6 +339,7 @@ export class BaileysStartupService extends ChannelStartupService {
     // Mark instance as deleting to prevent reconnection attempts.
     this.isDeleting = true;
     this.endSession = true;
+    this.clearConnectWatchdog();
 
     this.messageProcessor.onDestroy();
 
@@ -441,6 +448,8 @@ export class BaileysStartupService extends ChannelStartupService {
     });
 
     if (qr) {
+      // Pairing in progress: the human may take minutes to scan — never time it out.
+      this.clearConnectWatchdog();
       if (this.instance.qrcode.count === this.configService.get<QrCode>('QRCODE').LIMIT) {
         this.sendDataWebhook(Events.QRCODE_UPDATED, {
           message: 'QR code limit reached, please login again',
@@ -532,6 +541,7 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     if (connection === 'close') {
+      this.clearConnectWatchdog();
       // Check if instance is being deleted or session is ending
       if (this.isDeleting || this.endSession) {
         this.logger.info('Instance is being deleted/ended, skipping reconnection attempt');
@@ -629,6 +639,7 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     if (connection === 'open') {
+      this.clearConnectWatchdog();
       if (!this.client?.user?.id) {
         this.logger.warn('connectionUpdate: connection open but client.user is undefined, skipping');
         return;
@@ -686,8 +697,97 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     if (connection === 'connecting') {
+      // Only a paired session gets the watchdog: an unpaired one is waiting for a
+      // QR scan, which is human-paced and handled by the QR limit/timeout.
+      const registered = !!this.instance.wuid || !!this.instance.authState?.state?.creds?.registered;
+      if (registered) this.armConnectWatchdog();
       this.sendDataWebhook(Events.CONNECTION_UPDATE, { instance: this.instance.name, ...this.stateConnection });
     }
+  }
+
+  // ── vendora patch: connect watchdog + single-connect restart ───────────────
+  // See VENDORA-PATCHES.md (2026-09-13). Both paths tear the socket down WITHOUT
+  // letting its 'connection.update' handler schedule a second reconnect, so a
+  // credential never has two live sockets (the <conflict/> 440 ping-pong).
+
+  private clearConnectWatchdog() {
+    if (this.connectWatchdog) {
+      clearTimeout(this.connectWatchdog);
+      this.connectWatchdog = undefined;
+    }
+  }
+
+  private armConnectWatchdog() {
+    this.clearConnectWatchdog();
+    const ms = BaileysStartupService.CONNECT_WATCHDOG_MS;
+    if (ms <= 0) return;
+    const client = this.client;
+    this.connectWatchdog = setTimeout(() => {
+      this.connectWatchdog = undefined;
+      if (this.isDeleting || this.endSession) return;
+      // A newer socket replaced this one, or it did open/close meanwhile.
+      if (this.client !== client || this.stateConnection.state !== 'connecting') return;
+
+      this.reconnectAttempts += 1;
+      const delayMs = Math.floor(Math.random() * Math.min(60_000, 1_000 * 2 ** (this.reconnectAttempts - 1)));
+      this.logger.warn(
+        `Connect watchdog: socket still "connecting" after ${ms}ms — tearing it down, reconnecting in ${delayMs}ms (attempt ${this.reconnectAttempts})`,
+      );
+      this.teardownSocket(
+        client,
+        new Boom('Connect watchdog: handshake never completed', { statusCode: DisconnectReason.timedOut }),
+      );
+      this.scheduleReconnect(delayMs);
+    }, ms);
+  }
+
+  /** Closes a socket silently: its own close handler must not schedule a reconnect. */
+  private teardownSocket(client: WASocket | undefined, reason: Error) {
+    if (!client) return;
+    try {
+      client.ev.removeAllListeners('connection.update');
+    } catch {
+      /* already destroyed */
+    }
+    try {
+      client.ws?.close();
+    } catch {
+      /* already closed */
+    }
+    try {
+      void client.end(reason);
+    } catch {
+      /* already ended */
+    }
+  }
+
+  private scheduleReconnect(delayMs: number) {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = undefined;
+      try {
+        await this.connectToWhatsapp(this.phoneNumber);
+      } catch (error) {
+        this.logger.error(`Reconnect attempt failed: ${error}`);
+      }
+    }, delayMs);
+  }
+
+  /**
+   * Restart = one teardown + one connect. The previous controller path called
+   * `client.end()` (whose close event schedules the auto-reconnect) AND
+   * `connectToWhatsapp()` — two connects per restart. Works from any state,
+   * including a socket stuck in "connecting".
+   */
+  public async restartSocket(): Promise<void> {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.clearConnectWatchdog();
+    this.reconnectAttempts = 0;
+    this.teardownSocket(this.client, new Error('restart'));
+    await this.connectToWhatsapp(this.phoneNumber);
   }
 
   private async getMessage(key: proto.IMessageKey, full = false) {
@@ -894,6 +994,9 @@ export class BaileysStartupService extends ChannelStartupService {
         this.logger.warn(`Could not close previous socket cleanly: ${error}`);
       }
     }
+
+    // A fresh socket gets a fresh watchdog (armed by its own 'connecting' event).
+    this.clearConnectWatchdog();
 
     this.client = makeWASocket(socketConfig);
 

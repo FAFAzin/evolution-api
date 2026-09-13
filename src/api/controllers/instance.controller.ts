@@ -525,6 +525,20 @@ export class InstanceController {
       if (state === 'open' || state === 'connecting') {
         if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED) instance.clearCacheChatwoot();
 
+        // vendora patch: one teardown + one connect. `client.end()` alone makes the
+        // close handler schedule an auto-reconnect, and calling connectToWhatsapp on
+        // top of it produced two connects per restart (see VENDORA-PATCHES.md).
+        if (typeof instance.restartSocket === 'function') {
+          await instance.restartSocket();
+          await new Promise((r) => setTimeout(r, 2000));
+          return {
+            instance: {
+              instanceName: instanceName,
+              status: instance.connectionStatus?.state || 'connecting',
+            },
+          };
+        }
+
         instance.client?.ws?.close();
         instance.client?.end(new Error('restart'));
         return await this.connectToWhatsapp({ instanceName });
