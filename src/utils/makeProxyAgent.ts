@@ -1,17 +1,35 @@
 import { socksDispatcher } from 'fetch-socks';
+import * as http from 'http';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { ProxyAgent } from 'undici';
 
 type Proxy = {
-  host: string;
+  // Optional to match `wa.LocalProxy` (this fork's own instance-proxy config shape), so callers
+  // can pass it straight through to `proxyAgentConfigForUrl` without reshaping it.
+  host?: string;
   password?: string;
-  port: string;
-  protocol: string;
+  port?: string;
+  protocol?: string;
   username?: string;
 };
 
-function selectProxyAgent(proxyUrl: string): HttpsProxyAgent<string> | SocksProxyAgent {
+// vendora patch: HttpsProxyAgent/SocksProxyAgent default to `keepAlive: false` and no socket
+// timeout when built with no options, so every single request through the proxy (including
+// every media upload attempt) pays a fresh CONNECT tunnel handshake, and a proxy that accepts
+// the tunnel but then goes silent can hang the request forever. These defaults are applied to
+// every agent this factory builds; per-call code doesn't need to opt in.
+const DEFAULT_AGENT_OPTIONS: http.AgentOptions = {
+  keepAlive: true,
+  keepAliveMsecs: 10_000,
+  maxSockets: 64,
+  timeout: 120_000,
+};
+
+function selectProxyAgent(
+  proxyUrl: string,
+  agentOptions: http.AgentOptions,
+): HttpsProxyAgent<string> | SocksProxyAgent {
   const url = new URL(proxyUrl);
 
   // NOTE: The following constants are not used in the function but are defined for clarity.
@@ -23,7 +41,7 @@ function selectProxyAgent(proxyUrl: string): HttpsProxyAgent<string> | SocksProx
 
   switch (url.protocol) {
     case PROXY_HTTP_PROTOCOL:
-      return new HttpsProxyAgent(url);
+      return new HttpsProxyAgent(url, agentOptions);
     case PROXY_SOCKS_PROTOCOL:
     case PROXY_SOCKS5_PROTOCOL: {
       let urlSocks = '';
@@ -34,16 +52,21 @@ function selectProxyAgent(proxyUrl: string): HttpsProxyAgent<string> | SocksProx
         urlSocks = `socks://${url.hostname}:${url.port}`;
       }
 
-      return new SocksProxyAgent(urlSocks);
+      return new SocksProxyAgent(urlSocks, agentOptions);
     }
     default:
       throw new Error(`Unsupported proxy protocol: ${url.protocol}`);
   }
 }
 
-export function makeProxyAgent(proxy: Proxy | string): HttpsProxyAgent<string> | SocksProxyAgent {
+export function makeProxyAgent(
+  proxy: Proxy | string,
+  agentOptions: http.AgentOptions = {},
+): HttpsProxyAgent<string> | SocksProxyAgent {
+  const mergedOptions = { ...DEFAULT_AGENT_OPTIONS, ...agentOptions };
+
   if (typeof proxy === 'string') {
-    return selectProxyAgent(proxy);
+    return selectProxyAgent(proxy, mergedOptions);
   }
 
   const { host, password, port, protocol, username } = proxy;
@@ -53,7 +76,36 @@ export function makeProxyAgent(proxy: Proxy | string): HttpsProxyAgent<string> |
     proxyUrl = `${protocol}://${username}:${password}@${host}:${port}`;
   }
 
-  return selectProxyAgent(proxyUrl);
+  return selectProxyAgent(proxyUrl, mergedOptions);
+}
+
+/**
+ * True when `url`'s host is one of WhatsApp's own domains. The paid proxy pool exists to make
+ * *WhatsApp* traffic look like it comes from a Brazilian residential IP — routing a customer's
+ * own media host (or an arbitrary profile-picture URL) through it burns proxy bytes for no
+ * benefit and, per-instance, has been observed to add up (110 MB/week to our own media host
+ * alone across ~38 instances).
+ */
+export function isWhatsAppHost(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    const host = hostname.toLowerCase();
+    return host.endsWith('whatsapp.net') || host.endsWith('whatsapp.com');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Builds the axios `httpsAgent` config for fetching `url`: the proxy agent only when `url`
+ * actually targets a WhatsApp host and a proxy is configured, direct otherwise.
+ */
+export function proxyAgentConfigForUrl(
+  url: string,
+  proxy: Proxy | undefined,
+): { httpsAgent?: HttpsProxyAgent<string> | SocksProxyAgent } {
+  if (!proxy || !isWhatsAppHost(url)) return {};
+  return { httpsAgent: makeProxyAgent(proxy) };
 }
 
 export function makeProxyAgentUndici(proxy: Proxy | string): ProxyAgent {

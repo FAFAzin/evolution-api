@@ -73,6 +73,7 @@ import {
   configService,
   Database,
   Log,
+  MediaUploadCacheConf,
   Openai,
   ProviderSession,
   QrCode,
@@ -85,7 +86,15 @@ import { createId as cuid } from '@paralleldrive/cuid2';
 import { Instance, Message } from '@prisma/client';
 import { createJid } from '@utils/createJid';
 import { fetchLatestWaWebVersion } from '@utils/fetchLatestWaWebVersion';
-import { makeProxyAgent } from '@utils/makeProxyAgent';
+import { makeProxyAgent, proxyAgentConfigForUrl } from '@utils/makeProxyAgent';
+import {
+  buildMediaCacheKey,
+  hashBuffer,
+  identityForBase64OrUrl,
+  MediaUploadCache,
+  RecentSendKeyMap,
+} from '@utils/mediaUploadCache';
+import { computeMediaUploadTimeoutMs } from '@utils/mediaUploadTimeout';
 import { getOnWhatsappCache, saveOnWhatsappCache } from '@utils/onWhatsappCache';
 import { status } from '@utils/renderStatus';
 import { sendTelemetry } from '@utils/sendTelemetry';
@@ -145,6 +154,7 @@ import { createHash, randomBytes } from 'crypto';
 import EventEmitter2 from 'eventemitter2';
 import ffmpeg from 'fluent-ffmpeg';
 import FormData from 'form-data';
+import { promises as fsPromises } from 'fs';
 import { getLinkPreview } from 'link-preview-js';
 import Long from 'long';
 import mimeTypes from 'mime-types';
@@ -270,6 +280,24 @@ export class BaileysStartupService extends ChannelStartupService {
   private endSession = false;
   private isDeleting = false; // Flag to prevent reconnection during deletion
   private logBaileys = this.configService.get<Log>('LOG').BAILEYS;
+  // vendora patch: per-instance media upload cache — reuses a previous WhatsApp CDN upload
+  // when this SAME instance sends the SAME content again (funnel blasts resend identical
+  // media to thousands of contacts). Never shared across instances. See mediaUploadCache.ts.
+  private readonly mediaUploadCacheConf = this.configService.get<MediaUploadCacheConf>('MEDIA_UPLOAD_CACHE');
+  private readonly mediaUploadCache = new MediaUploadCache({
+    enabled: this.mediaUploadCacheConf?.ENABLED ?? true,
+    ttlMs: (this.mediaUploadCacheConf?.TTL_S ?? 259200) * 1000,
+  });
+  // messageId -> cache key, so a `messages.media-update` retry request (WA asking us to
+  // re-upload because a recipient couldn't download) can invalidate the right entry even
+  // though it only carries a message key, never the content hash.
+  private readonly mediaUploadCacheKeyByMessageId = new RecentSendKeyMap(
+    (this.mediaUploadCacheConf?.TTL_S ?? 259200) * 1000,
+  );
+  // Bridges prepareMediaMessage()'s cache key (and whether it was a hit) to the caller, which
+  // only learns the real, final message id after the message has actually been sent, and needs
+  // to know whether a send failure is worth retrying with a fresh upload.
+  private readonly mediaCacheKeyByPreparedMessage = new WeakMap<object, { cacheKey: string; wasHit: boolean }>();
   private eventProcessingQueue: Promise<void> = Promise.resolve();
   // vendora patch: reconnect backoff state (reset on a successful 'open').
   private reconnectAttempts = 0;
@@ -999,6 +1027,7 @@ export class BaileysStartupService extends ChannelStartupService {
     this.clearConnectWatchdog();
 
     this.client = makeWASocket(socketConfig);
+    this.instrumentUploadToServer();
 
     if (this.localSettings.wavoipToken && this.localSettings.wavoipToken.length > 0) {
       useVoiceCallsBaileys(this.localSettings.wavoipToken, this.client, this.connectionStatus.state as any, true);
@@ -2397,6 +2426,26 @@ export class BaileysStartupService extends ChannelStartupService {
               await this.messageHandle['messages.update'](payload, settings);
             }
 
+            // vendora patch: WhatsApp asks the sender to re-upload media a recipient couldn't
+            // download (a `mediaretry` node -> this event, key only, no content hash). If that
+            // message was served from our upload cache, the cached entry is now suspect —
+            // invalidate it so the NEXT send of this same content gets a fresh upload instead
+            // of repeating an upload other recipients may also be unable to fetch.
+            if (events['messages.media-update']) {
+              for (const update of events['messages.media-update']) {
+                const messageId = update?.key?.id;
+                if (!messageId) continue;
+
+                const cacheKey = this.mediaUploadCacheKeyByMessageId.resolve(messageId);
+                if (!cacheKey) continue;
+
+                this.mediaUploadCache.delete(cacheKey);
+                this.logger.info(
+                  `[media-cache] inst=${this.instance.name} invalidated key=${cacheKey} after a media-retry request for messageId=${messageId}`,
+                );
+              }
+            }
+
             if (events['message-receipt.update']) {
               const payload = events['message-receipt.update'] as MessageUserReceiptUpdate[];
               const remotesJidMap: Record<string, number> = {};
@@ -3337,6 +3386,120 @@ export class BaileysStartupService extends ChannelStartupService {
     return statusSent;
   }
 
+  /**
+   * Wraps `this.client.waUploadToServer` so a failed (or slow) upload is visible in OUR logs
+   * regardless of the Baileys pino logger level (this fork defaults LOG_BAILEYS=error, which
+   * hides Baileys' own `logger.warn('Error in uploading to <host>, retrying...')` — see
+   * baileys/lib/Utils/messages-media.js:getWAUploadToServer).
+   *
+   * Boundary: the per-host retry loop lives entirely inside `getWAUploadToServer` and gives
+   * callers no hook per attempt, so this wrapper can only observe the upload AS A WHOLE — one
+   * log line when it fails after exhausting every host, with total bytes and elapsed time. It
+   * cannot report which specific host(s) failed along the way or how many hosts were tried.
+   * Getting that would need either a patch to Baileys itself (this repo already uses
+   * patch-package for baileys — see patches/baileys+7.0.0-rc.6.patch — so that's the
+   * mechanism to reach for) or passing `customUploadHosts` to control/limit which hosts are
+   * tried, which does not by itself add visibility into per-host failures either.
+   */
+  private instrumentUploadToServer() {
+    const original = this.client?.waUploadToServer;
+    if (!original || (original as any).__vendoraInstrumented) return;
+
+    const instrumented = (async (
+      filePath: string,
+      options: { mediaType?: string; fileEncSha256B64?: string; timeoutMs?: number },
+    ) => {
+      const startedAt = Date.now();
+      let bytes = 0;
+      try {
+        bytes = (await fsPromises.stat(filePath)).size;
+      } catch {
+        // best-effort only; never block the actual upload on this
+      }
+
+      try {
+        return await original(filePath, options as any);
+      } catch (error) {
+        const elapsedMs = Date.now() - startedAt;
+        this.logger.warn(
+          `[media-upload] inst=${this.instance.name} FAILED type=${options?.mediaType} bytes=${bytes} elapsedMs=${elapsedMs} timeoutMs=${options?.timeoutMs} error=${error?.message || error}`,
+        );
+        throw error;
+      }
+    }) as typeof original;
+    (instrumented as any).__vendoraInstrumented = true;
+
+    this.client.waUploadToServer = instrumented;
+  }
+
+  /**
+   * Axios config for fetching an arbitrary media URL (a customer's own media host, a profile
+   * picture, ...). Only routes through the paid WhatsApp-traffic proxy when `url` is actually a
+   * WhatsApp host — every other URL is fetched directly, since proxying it buys nothing.
+   */
+  private axiosConfigForUrl(url: string): { responseType: 'arraybuffer'; httpsAgent?: any } {
+    return {
+      responseType: 'arraybuffer',
+      ...proxyAgentConfigForUrl(url, this.localProxy?.enabled ? this.localProxy : undefined),
+    };
+  }
+
+  /**
+   * Records which media-upload-cache key a just-sent message used, so a later
+   * `messages.media-update` event (WhatsApp asking us to re-upload because a recipient
+   * couldn't download) can invalidate that specific cache entry. Safe no-op when the
+   * message wasn't cache-eligible or the send didn't return a message id.
+   */
+  private trackMediaUploadCacheKey(
+    preparedMessage: object | undefined,
+    sentMessage: { key?: { id?: string } } | undefined,
+  ) {
+    if (!preparedMessage || !sentMessage?.key?.id) return;
+    const info = this.mediaCacheKeyByPreparedMessage.get(preparedMessage);
+    if (info) this.mediaUploadCacheKeyByMessageId.track(sentMessage.key.id, info.cacheKey);
+  }
+
+  /**
+   * Prepares a media message (cache hit or fresh upload) and sends it. If the send fails and
+   * the cache was the reason (a cached upload might have gone stale on WhatsApp's side even
+   * though it's still inside our TTL), invalidate that entry and retry exactly once with a
+   * fresh upload — a fresh-upload failure is NOT retried here and just propagates.
+   */
+  private async prepareAndSendMediaMessage(
+    mediaData: MediaMessage,
+    number: string,
+    sendOptions: {
+      delay?: number;
+      presence?: WAPresence;
+      quoted?: any;
+      mentionsEveryOne?: boolean;
+      mentioned?: string[];
+      messageId?: string;
+    },
+    isIntegration: boolean,
+  ) {
+    let generate = await this.prepareMediaMessage(mediaData);
+
+    try {
+      const mediaSent = await this.sendMessageWithTyping(number, { ...generate.message }, sendOptions, isIntegration);
+      this.trackMediaUploadCacheKey(generate, mediaSent);
+      return mediaSent;
+    } catch (error) {
+      const cacheInfo = this.mediaCacheKeyByPreparedMessage.get(generate);
+      if (!cacheInfo?.wasHit) throw error;
+
+      this.logger.warn(
+        `[media-cache] inst=${this.instance.name} send failed using a cached upload (key=${cacheInfo.cacheKey}); invalidating and retrying once with a fresh upload: ${error?.message || error}`,
+      );
+      this.mediaUploadCache.delete(cacheInfo.cacheKey);
+
+      generate = await this.prepareMediaMessage(mediaData);
+      const mediaSent = await this.sendMessageWithTyping(number, { ...generate.message }, sendOptions, isIntegration);
+      this.trackMediaUploadCacheKey(generate, mediaSent);
+      return mediaSent;
+    }
+  }
+
   private async prepareMediaMessage(mediaMessage: MediaMessage) {
     // vendora patch: media is uploaded here, BEFORE sendMessageWithTyping's connection
     // guard runs — so on a disconnected instance this used to blow up with
@@ -3353,20 +3516,7 @@ export class BaileysStartupService extends ChannelStartupService {
       if (mediaMessage.mediatype === 'image') {
         let imageBuffer: Buffer;
         if (isURL(mediaMessage.media)) {
-          let config: any = { responseType: 'arraybuffer' };
-
-          if (this.localProxy?.enabled) {
-            config = {
-              ...config,
-              httpsAgent: makeProxyAgent({
-                host: this.localProxy.host,
-                port: this.localProxy.port,
-                protocol: this.localProxy.protocol,
-                username: this.localProxy.username,
-                password: this.localProxy.password,
-              }),
-            };
-          }
+          const config = this.axiosConfigForUrl(mediaMessage.media);
 
           const response = await axios.get(mediaMessage.media, config);
           imageBuffer = Buffer.from(response.data, 'binary');
@@ -3383,12 +3533,43 @@ export class BaileysStartupService extends ChannelStartupService {
           : Buffer.from(mediaMessage.media, 'base64');
       }
 
-      const prepareMedia = await prepareWAMessageMedia(
-        {
-          [type]: mediaInput,
-        } as any,
-        { upload: this.client.waUploadToServer },
-      );
+      // vendora patch: per-instance media upload cache. Same content (funnel media resent to
+      // many contacts) reuses the previous upload's url/directPath/mediaKey instead of
+      // re-encrypting and re-uploading the whole file. See src/utils/mediaUploadCache.ts.
+      const contentSize = Buffer.isBuffer(mediaInput) ? mediaInput.length : 0;
+      const cacheIdentity = Buffer.isBuffer(mediaInput) ? `sha256:${hashBuffer(mediaInput)}` : `url:${mediaInput.url}`;
+      const cacheKey = this.mediaUploadCache.isEnabled()
+        ? buildMediaCacheKey({ mediaType: type, identity: cacheIdentity })
+        : undefined;
+      const cachedBytes = cacheKey ? this.mediaUploadCache.get(cacheKey, contentSize) : undefined;
+
+      let prepareMedia: any;
+      const wasCacheHit = !!cachedBytes;
+      if (cachedBytes) {
+        prepareMedia = proto.Message.decode(cachedBytes);
+      } else {
+        prepareMedia = await prepareWAMessageMedia(
+          {
+            [type]: mediaInput,
+          } as any,
+          {
+            upload: this.client.waUploadToServer,
+            mediaUploadTimeoutMs: computeMediaUploadTimeoutMs(contentSize || undefined),
+          },
+        );
+
+        if (cacheKey) {
+          const uploaded = prepareMedia[`${type}Message`];
+          // Never cache an upload that didn't actually get a directPath/mediaKey back —
+          // a partial/failed result would poison every later send of this same content.
+          if (uploaded?.directPath && uploaded?.mediaKey) {
+            this.mediaUploadCache.set(cacheKey, Buffer.from(proto.Message.encode(prepareMedia).finish()));
+          }
+        }
+      }
+
+      const summaryLine = this.mediaUploadCache.maybeSummarize(this.instance.name);
+      if (summaryLine) this.logger.info(summaryLine);
 
       const mediaType = mediaMessage.mediatype + 'Message';
 
@@ -3414,20 +3595,7 @@ export class BaileysStartupService extends ChannelStartupService {
         mimetype = mimeTypes.lookup(mediaMessage.fileName);
 
         if (!mimetype && isURL(mediaMessage.media)) {
-          let config: any = { responseType: 'arraybuffer' };
-
-          if (this.localProxy?.enabled) {
-            config = {
-              ...config,
-              httpsAgent: makeProxyAgent({
-                host: this.localProxy.host,
-                port: this.localProxy.port,
-                protocol: this.localProxy.protocol,
-                username: this.localProxy.username,
-                password: this.localProxy.password,
-              }),
-            };
-          }
+          const config = this.axiosConfigForUrl(mediaMessage.media);
 
           const response = await axios.get(mediaMessage.media, config);
 
@@ -3491,11 +3659,17 @@ export class BaileysStartupService extends ChannelStartupService {
         }
       }
 
-      return generateWAMessageFromContent(
+      const prepared = generateWAMessageFromContent(
         '',
         { [mediaType]: { ...prepareMedia[mediaType] } },
         { userJid: this.instance.wuid },
       );
+
+      // Remember which cache key this prepared message used so, once the caller sends it and
+      // learns the real message id, a later `messages.media-update` retry can invalidate it.
+      if (cacheKey) this.mediaCacheKeyByPreparedMessage.set(prepared, { cacheKey, wasHit: wasCacheHit });
+
+      return prepared;
     } catch (error) {
       this.logger.error(error);
       throw new InternalServerErrorException(error?.toString() || error);
@@ -3515,20 +3689,7 @@ export class BaileysStartupService extends ChannelStartupService {
         parsedURL.searchParams.set('timestamp', timestamp.toString());
         const url = parsedURL.toString();
 
-        let config: any = { responseType: 'arraybuffer' };
-
-        if (this.localProxy?.enabled) {
-          config = {
-            ...config,
-            httpsAgent: makeProxyAgent({
-              host: this.localProxy.host,
-              port: this.localProxy.port,
-              protocol: this.localProxy.protocol,
-              username: this.localProxy.username,
-              password: this.localProxy.password,
-            }),
-          };
-        }
+        const config = this.axiosConfigForUrl(url);
 
         const response = await axios.get(url, config);
         imageBuffer = Buffer.from(response.data, 'binary');
@@ -3593,11 +3754,9 @@ export class BaileysStartupService extends ChannelStartupService {
 
     if (file) mediaData.media = file.buffer.toString('base64');
 
-    const generate = await this.prepareMediaMessage(mediaData);
-
-    const mediaSent = await this.sendMessageWithTyping(
+    return this.prepareAndSendMediaMessage(
+      mediaData,
       data.number,
-      { ...generate.message },
       {
         delay: data?.delay,
         presence: 'composing',
@@ -3608,8 +3767,6 @@ export class BaileysStartupService extends ChannelStartupService {
       },
       isIntegration,
     );
-
-    return mediaSent;
   }
 
   public async ptvMessage(data: SendPtvDto, file?: any, isIntegration = false) {
@@ -3626,11 +3783,9 @@ export class BaileysStartupService extends ChannelStartupService {
 
     if (file) mediaData.media = file.buffer.toString('base64');
 
-    const generate = await this.prepareMediaMessage(mediaData);
-
-    const mediaSent = await this.sendMessageWithTyping(
+    return this.prepareAndSendMediaMessage(
+      mediaData,
       data.number,
-      { ...generate.message },
       {
         delay: data?.delay,
         presence: 'composing',
@@ -3641,8 +3796,6 @@ export class BaileysStartupService extends ChannelStartupService {
       },
       isIntegration,
     );
-
-    return mediaSent;
   }
 
   public async processAudioMp4(audio: string) {
@@ -3882,46 +4035,144 @@ export class BaileysStartupService extends ChannelStartupService {
       data.encoding = true;
     }
 
-    if (data?.encoding) {
-      const convert = await this.processAudio(mediaData.audio);
-
-      if (Buffer.isBuffer(convert)) {
-        const { seconds, waveform } = await this.getAudioMetadata(convert);
-
-        const messageContent = { audio: convert, ptt: true, mimetype: 'audio/ogg; codecs=opus', seconds, waveform };
-
-        const result = this.sendMessageWithTyping<AnyMessageContent>(
-          data.number,
-          messageContent as any,
-          { presence: 'recording', delay: data?.delay, quoted: data?.quoted },
-          isIntegration,
-        );
-
-        return result;
-      } else {
-        throw new InternalServerErrorException('Failed to convert audio');
-      }
-    }
-
-    const audioBuffer = isURL(data.audio) ? { url: data.audio } : Buffer.from(data.audio, 'base64');
-    let metadata: { seconds: number; waveform: Uint8Array } | undefined;
-
-    // Only generate waveform for buffers, not URLs
-    if (Buffer.isBuffer(audioBuffer)) {
-      metadata = await this.getAudioMetadata(audioBuffer);
-    }
-
-    return await this.sendMessageWithTyping<AnyMessageContent>(
+    return this.prepareAndSendAudioMessage(
+      mediaData,
+      data.encoding,
       data.number,
-      {
-        audio: audioBuffer,
-        ptt: true,
-        mimetype: 'audio/ogg; codecs=opus',
-        ...(metadata && { seconds: metadata.seconds, waveform: metadata.waveform }),
-      },
       { presence: 'recording', delay: data?.delay, quoted: data?.quoted },
       isIntegration,
     );
+  }
+
+  /**
+   * Builds the audioMessage proto (cache hit or fresh upload+encode) without sending it. Mirrors
+   * prepareMediaMessage()'s caching shape, but keys BEFORE the ffmpeg conversion so a cache hit
+   * also skips that CPU work, not just the upload.
+   */
+  private async prepareAudioMessage(mediaData: SendAudioDto, encoding: boolean) {
+    if (!this.client?.waUploadToServer) {
+      throw new BadRequestException('instance not connected');
+    }
+
+    try {
+      const isUrlInput = isURL(mediaData.audio);
+      const identity = identityForBase64OrUrl(mediaData.audio, isUrlInput);
+      const cacheKey = this.mediaUploadCache.isEnabled()
+        ? buildMediaCacheKey({ mediaType: 'audio', identity, variant: encoding ? 'ptt-enc' : 'ptt-raw' })
+        : undefined;
+
+      const cachedBytes = cacheKey ? this.mediaUploadCache.get(cacheKey) : undefined;
+      const wasCacheHit = !!cachedBytes;
+      let audioMessage: any;
+
+      if (cachedBytes) {
+        audioMessage = proto.Message.decode(cachedBytes).audioMessage;
+      } else {
+        let audioInput: Buffer | { url: string };
+        let seconds: number | undefined;
+        let waveform: Uint8Array | undefined;
+
+        if (encoding) {
+          const convert = await this.processAudio(mediaData.audio);
+          if (!Buffer.isBuffer(convert)) {
+            throw new InternalServerErrorException('Failed to convert audio');
+          }
+          const meta = await this.getAudioMetadata(convert);
+          audioInput = convert;
+          seconds = meta.seconds;
+          waveform = meta.waveform;
+        } else {
+          audioInput = isUrlInput ? { url: mediaData.audio } : Buffer.from(mediaData.audio, 'base64');
+          // Only generate waveform for buffers, not URLs
+          if (Buffer.isBuffer(audioInput)) {
+            const meta = await this.getAudioMetadata(audioInput);
+            seconds = meta.seconds;
+            waveform = meta.waveform;
+          }
+        }
+
+        const contentSize = Buffer.isBuffer(audioInput) ? audioInput.length : 0;
+        const prepareMedia = await prepareWAMessageMedia(
+          {
+            audio: audioInput,
+            ptt: true,
+            mimetype: 'audio/ogg; codecs=opus',
+            ...(seconds !== undefined && { seconds }),
+            ...(waveform !== undefined && { waveform }),
+          } as any,
+          {
+            upload: this.client.waUploadToServer,
+            mediaUploadTimeoutMs: computeMediaUploadTimeoutMs(contentSize || undefined),
+          },
+        );
+
+        audioMessage = prepareMedia.audioMessage;
+
+        // Never cache an upload that didn't actually get a directPath/mediaKey back.
+        if (cacheKey && audioMessage?.directPath && audioMessage?.mediaKey) {
+          this.mediaUploadCache.set(cacheKey, Buffer.from(proto.Message.encode(prepareMedia).finish()));
+        }
+      }
+
+      const summaryLine = this.mediaUploadCache.maybeSummarize(this.instance.name);
+      if (summaryLine) this.logger.info(summaryLine);
+
+      const prepared = { message: { audioMessage } };
+      if (cacheKey) this.mediaCacheKeyByPreparedMessage.set(prepared, { cacheKey, wasHit: wasCacheHit });
+      return prepared;
+    } catch (error) {
+      this.logger.error(error);
+      throw new InternalServerErrorException(error?.toString() || error);
+    }
+  }
+
+  /**
+   * Prepares (cache hit or fresh upload) and sends an audio/PTT message. Note: unlike image/
+   * video/document — which are sent as a `forward` of the already-prepared content (see
+   * sendMessage()'s generic branch) — this ALSO now goes through that same forward path,
+   * because that's what makes the cache usable: skipping Baileys' own internal audio upload
+   * (triggered when `audio` is sent directly via client.sendMessage) requires handing it an
+   * already-built `audioMessage` instead, exactly like the image/video path already does. This
+   * mechanism is proven in this fork for image/video/document; it has not been separately
+   * verified for audio specifically.
+   */
+  private async prepareAndSendAudioMessage(
+    mediaData: SendAudioDto,
+    encoding: boolean,
+    number: string,
+    sendOptions: { presence?: WAPresence; delay?: number; quoted?: any },
+    isIntegration: boolean,
+  ) {
+    let generate = await this.prepareAudioMessage(mediaData, encoding);
+
+    try {
+      const sent = await this.sendMessageWithTyping<AnyMessageContent>(
+        number,
+        { ...generate.message } as any,
+        sendOptions,
+        isIntegration,
+      );
+      this.trackMediaUploadCacheKey(generate, sent);
+      return sent;
+    } catch (error) {
+      const cacheInfo = this.mediaCacheKeyByPreparedMessage.get(generate);
+      if (!cacheInfo?.wasHit) throw error;
+
+      this.logger.warn(
+        `[media-cache] inst=${this.instance.name} audio send failed using a cached upload (key=${cacheInfo.cacheKey}); invalidating and retrying once with a fresh upload: ${error?.message || error}`,
+      );
+      this.mediaUploadCache.delete(cacheInfo.cacheKey);
+
+      generate = await this.prepareAudioMessage(mediaData, encoding);
+      const sent = await this.sendMessageWithTyping<AnyMessageContent>(
+        number,
+        { ...generate.message } as any,
+        sendOptions,
+        isIntegration,
+      );
+      this.trackMediaUploadCacheKey(generate, sent);
+      return sent;
+    }
   }
 
   private generateRandomId(length = 11) {
@@ -4956,20 +5207,7 @@ export class BaileysStartupService extends ChannelStartupService {
         parsedURL.searchParams.set('timestamp', timestamp.toString());
         const url = parsedURL.toString();
 
-        let config: any = { responseType: 'arraybuffer' };
-
-        if (this.localProxy?.enabled) {
-          config = {
-            ...config,
-            httpsAgent: makeProxyAgent({
-              host: this.localProxy.host,
-              port: this.localProxy.port,
-              protocol: this.localProxy.protocol,
-              username: this.localProxy.username,
-              password: this.localProxy.password,
-            }),
-          };
-        }
+        const config = this.axiosConfigForUrl(url);
 
         pic = (await axios.get(url, config)).data;
       } else if (isBase64(picture)) {
@@ -5250,20 +5488,7 @@ export class BaileysStartupService extends ChannelStartupService {
         parsedURL.searchParams.set('timestamp', timestamp.toString());
         const url = parsedURL.toString();
 
-        let config: any = { responseType: 'arraybuffer' };
-
-        if (this.localProxy?.enabled) {
-          config = {
-            ...config,
-            httpsAgent: makeProxyAgent({
-              host: this.localProxy.host,
-              port: this.localProxy.port,
-              protocol: this.localProxy.protocol,
-              username: this.localProxy.username,
-              password: this.localProxy.password,
-            }),
-          };
-        }
+        const config = this.axiosConfigForUrl(url);
 
         pic = (await axios.get(url, config)).data;
       } else if (isBase64(picture.image)) {

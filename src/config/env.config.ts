@@ -395,6 +395,11 @@ export type EventEmitter = {
   MAX_LISTENERS: number;
 };
 
+export type MediaUploadCacheConf = {
+  ENABLED: boolean;
+  TTL_S: number;
+};
+
 export type Production = boolean;
 
 export interface Env {
@@ -435,6 +440,7 @@ export interface Env {
   FACEBOOK: Facebook;
   SENTRY: Sentry;
   EVENT_EMITTER: EventEmitter;
+  MEDIA_UPLOAD_CACHE: MediaUploadCacheConf;
   PRODUCTION?: Production;
 }
 
@@ -919,6 +925,13 @@ export class ConfigService {
       },
       EVENT_EMITTER: {
         MAX_LISTENERS: Number.parseInt(process.env?.EVENT_EMITTER_MAX_LISTENERS) || 50,
+      },
+      MEDIA_UPLOAD_CACHE: {
+        // Kill switch: MEDIA_UPLOAD_CACHE=false or =off disables the per-instance upload cache.
+        ENABLED: !['false', 'off'].includes((process.env?.MEDIA_UPLOAD_CACHE || '').toLowerCase()),
+        // WhatsApp keeps uploaded media reachable for ~2.5-4 weeks; 72h default leaves a wide
+        // margin while keeping cached entries reasonably fresh.
+        TTL_S: Number.parseInt(process.env?.MEDIA_UPLOAD_CACHE_TTL_S) || 259200,
       },
     };
   }
