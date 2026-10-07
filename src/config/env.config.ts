@@ -303,6 +303,7 @@ export type CacheConfLocal = {
 export type SslConf = { PRIVKEY: string; FULLCHAIN: string };
 export type Webhook = {
   GLOBAL?: GlobalWebhook;
+  BASE64_API_SENT: boolean;
   EVENTS: EventsWebhook;
   REQUEST?: {
     TIMEOUT_MS?: number;
@@ -764,6 +765,7 @@ export class ConfigService {
         : true,
       LANGUAGE: process.env?.LANGUAGE || 'en',
       WEBHOOK: {
+        BASE64_API_SENT: process.env?.WEBHOOK_BASE64_API_SENT === 'true',
         GLOBAL: {
           URL: process.env?.WEBHOOK_GLOBAL_URL || '',
           ENABLED: process.env?.WEBHOOK_GLOBAL_ENABLED === 'true',

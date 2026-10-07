@@ -78,6 +78,7 @@ import {
   ProviderSession,
   QrCode,
   S3,
+  Webhook,
 } from '@config/env.config';
 import { BadRequestException, InternalServerErrorException, NotFoundException } from '@exceptions';
 import ffmpegPath from '@ffmpeg-installer/ffmpeg';
@@ -1877,8 +1878,22 @@ export class BaileysStartupService extends ChannelStartupService {
             }
           }
 
+          // fromMe echo of a message this API sent: the caller already has the file, skip the base64 re-download.
+          let skipBase64ApiEcho = false;
+          if (
+            isMedia &&
+            this.localWebhook.enabled &&
+            this.localWebhook.webhookBase64 &&
+            received.key?.fromMe === true
+          ) {
+            const base64ApiSent = this.configService.get<Webhook>('WEBHOOK').BASE64_API_SENT;
+            if (!base64ApiSent) {
+              skipBase64ApiEcho = !!(await this.baileysCache.get(`api_sent:${received.key.id}`));
+            }
+          }
+
           if (this.localWebhook.enabled) {
-            if (isMedia && this.localWebhook.webhookBase64) {
+            if (isMedia && this.localWebhook.webhookBase64 && !skipBase64ApiEcho) {
               try {
                 const buffer = await downloadMediaMessage(
                   { key: received.key, message: received?.message },
@@ -3064,6 +3079,11 @@ export class BaileysStartupService extends ChannelStartupService {
 
       const messageRaw = this.prepareMessage(messageSent) as any;
 
+      // Mark API-originated sends so the messages.upsert echo can skip the webhook base64 re-download.
+      if (messageSent?.key?.id) {
+        await this.baileysCache.set(`api_sent:${messageSent.key.id}`, true, 10 * 60);
+      }
+
       const isMedia =
         messageSent?.message?.imageMessage ||
         messageSent?.message?.videoMessage ||
@@ -3150,8 +3170,9 @@ export class BaileysStartupService extends ChannelStartupService {
         }
       }
 
+      const base64ApiSent = this.configService.get<Webhook>('WEBHOOK').BASE64_API_SENT;
       if (this.localWebhook.enabled) {
-        if (isMedia && this.localWebhook.webhookBase64) {
+        if (isMedia && this.localWebhook.webhookBase64 && base64ApiSent) {
           try {
             const buffer = await downloadMediaMessage(
               { key: messageRaw.key, message: messageRaw?.message },

@@ -194,6 +194,19 @@ Fork mínimo da Evolution API para uso self-hosted do vendora.bot.
   restart (o patch de socket único de 07/14 evitava o 440, mas custava um handshake
   abandonado). Diagnóstico no vendora: `docs/brain/log.md` 2026-09-13.
 
+- **Custo: fetchInstances sem `_count` + webhook sem base64 para mídia enviada pela API (2026-10-07)** —
+  `monitor.service.ts` (`instanceInfo`), `env.config.ts`, `.env.example`,
+  `whatsapp.baileys.service.ts` (`sendMessageWithTyping` e handler `messages.upsert`).
+  (1) `instanceInfo` não faz mais `_count` de Message/Contact/Chat por instância: o app
+  Vendora chama `fetchInstances` ~1x/min por instância e o count varria tabelas de vários GB.
+  (2) Com `webhookBase64` ligado, a Evolution rebaixava do CDN do WhatsApp toda mídia que
+  acabara de ENVIAR e a postava em base64 duas vezes (evento SEND_MESSAGE + eco `fromMe` do
+  `messages.upsert`), embora o app já tenha o arquivo. Agora `sendMessageWithTyping` grava a
+  chave de cache `api_sent:<id>` (TTL 10 min) e ambos os caminhos pulam o download/base64,
+  sem suprimir o webhook em si. Flag `WEBHOOK_BASE64_API_SENT` (default `false`; `true` =
+  comportamento antigo). Mídia enviada pelo celular (`fromMe` sem a chave) mantém o base64,
+  pois o app a usa para exibir no inbox.
+
 ## Config operacional (Railway staging, não é patch de código)
 
 - **`CONFIG_BAILEYS_VERSION=2.3000.1040300918`** — pin da versão anunciada do WA Web.
